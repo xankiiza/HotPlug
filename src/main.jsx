@@ -1,0 +1,67 @@
+import React, { useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { FiArrowUpRight, FiCopy, FiCpu, FiKey, FiLogIn, FiLogOut, FiPlus, FiRefreshCw, FiSend, FiShield, FiTrash2, FiZap } from 'react-icons/fi';
+import './styles.css';
+
+const api = async (url, options = {}) => {
+  let response;
+  try { response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } }); }
+  catch { throw new Error('HotPlug gateway is offline. Run npm run dev and refresh this page.'); }
+  const raw = await response.text();
+  let data;
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error(`Gateway returned an invalid response (${response.status}). Restart npm run dev.`); }
+  if (!response.ok) throw new Error(data.error?.message || `Request failed (${response.status})`);
+  return data;
+};
+
+function App() {
+  const [view, setView] = useState('home'), [session, setSession] = useState({ loading: true, authenticated: false });
+  useEffect(() => { api('/api/auth/status').then(setSession).catch(() => setSession({ loading: false, authenticated: false })); }, []);
+  const begin = () => setView(session.authenticated ? 'admin' : 'login');
+  const logout = async () => { await api('/api/auth/logout', { method: 'POST' }); setSession({ authenticated: false }); setView('home'); };
+  return <div className="app">
+    <header><button className="logo bare" onClick={() => setView('home')}><b><FiZap /></b>hotplug<span>.</span></button><nav><a href="#how">How it works</a><a href="#providers">Providers</a><a href="#api">API reference</a></nav>{session.authenticated ? <div className="session-actions"><button className="signin-button" onClick={() => setView('admin')}>Admin <FiArrowUpRight /></button><button className="signout-button" onClick={logout}><FiLogOut /> Sign Out</button></div> : <button className="signin-button" onClick={begin}><FiLogIn /> Sign In</button>}</header>
+    {view === 'admin' && session.authenticated ? <Admin /> : view === 'login' && !session.authenticated ? <Login onSuccess={result => { setSession(result); setView('admin'); }} /> : <Home onStart={begin} signedIn={session.authenticated} />}
+  </div>;
+}
+
+function Login({ onSuccess }) {
+  const [email, setEmail] = useState('xankiiza@gmail.com'), [password, setPassword] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  const submit = async event => { event.preventDefault(); setBusy(true); setError(''); try { onSuccess(await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })); } catch (failure) { setError(failure.message); } finally { setBusy(false); } };
+  return <main className="login-page"><form className="login-card" onSubmit={submit}><div className="brand-mark-large"><FiZap /></div><label>HOTPLUG ADMIN</label><h1>Welcome back.</h1><p>Sign in to manage providers, browser sessions, and OpenClaw keys.</p>{error && <div className="login-error">{error}</div>}<label htmlFor="email">Email</label><input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" required /><label htmlFor="password">Password</label><input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" autoFocus required /><button className="button login-submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign In'} <FiArrowUpRight /></button><small><FiShield /> Protected local session · 12 hour expiry</small></form></main>;
+}
+
+const publicProviders = [['G', 'Gemini', 'auto-routed'], ['D', 'DeepSeek', 'auto-routed'], ['C', 'Claude', 'auto-routed'], ['O', 'ChatGPT', 'auto-routed']];
+function Home({ onStart, signedIn }) {
+  const cards = [[FiLogIn, 'Open a provider session', 'HotPlug launches Chromium. You complete the provider login yourself.'], [FiKey, 'Create an OpenClaw key', 'Only its SHA-256 hash is persisted. Copy the key when it is created.'], [FiZap, 'Send real requests', 'HotPlug auto-routes each prompt to the best signed-in provider for speed and task fit.']];
+  return <><section className="hero" id="top"><div className="copy"><h1>You don’t need<br /><i>API keys anymore.</i></h1><p>HotPlug turns AI accounts you already use into one OpenAI-compatible API. Sign in once, route requests locally, and keep your data in your hands.</p><div className="actions"><button className="button" onClick={onStart}>{signedIn ? 'Open Admin' : 'Get Started'} <FiArrowUpRight /></button><a className="play" href="#how"><span>→</span> See how it works</a></div><small className="trust"><FiShield /> Credentials are entered only in each provider’s browser window</small></div><div className="visual"><div className="rings" /><div className="core"><FiZap /></div><div className="terminal"><div className="top">● ● ● &nbsp; hotplug · local gateway <em>● LOCAL</em></div><div className="term"><p className="dim">$ npm run dev</p><p><strong>✓</strong> Gateway on <span className="cyan">localhost:8787</span></p><p className="dim">$ POST /v1/chat/completions</p><div className="request"><b>POST</b> OpenAI-compatible request<br /><small>⚙ provider route <span>→</span> browser session</small></div></div></div></div></section>
+    <section className="strip" id="providers"><div className="strip-label">SUPPORTED PROVIDERS<br /><b>SIGN IN FROM ADMIN</b></div>{publicProviders.map(([letter, name, model]) => <div className="provider" key={name}><span className={'picon ' + name.toLowerCase()}>{letter}</span><div><strong>{name}</strong><small>{model}</small></div><button className="connect-button" onClick={onStart}>Sign In</button></div>)}</section>
+    <section className="content" id="how"><label>THE HOTPLUG WAY</label><div className="heading"><h2>Sign in once.<br /><span>Route locally.</span></h2><p>Your browser profiles stay on this machine. OpenClaw talks only to the protected local API.</p></div><div className="steps">{cards.map(([Icon, title, text]) => <article key={title}><Icon /><h3>{title}</h3><p>{text}</p></article>)}</div></section>
+    <section className="api" id="api"><div><label>OPENAI COMPATIBLE</label><h2>Keep your stack.<br /><i>Change the endpoint.</i></h2><p>Create a HotPlug key in Admin, then point OpenClaw at the local URL. Model is always <code>auto</code> — HotPlug picks the best signed-in provider per request.</p><div className="endpoint">http://127.0.0.1:8787/v1 <FiCopy /></div></div><pre><span>// OpenClaw configuration</span>{'\n'}baseURL: <i>"http://127.0.0.1:8787/v1"</i>{'\n'}apiKey: <i>"hp_..."</i>{'\n'}model: <i>"auto"</i></pre></section>
+    <section className="cta"><div><label>READY WHEN YOU ARE</label><h2>Sign in. Test. Connect.</h2></div><button className="button" onClick={onStart}>Open Admin <FiArrowUpRight /></button></section><footer><button className="logo bare" onClick={() => scrollTo(0, 0)}><b><FiZap /></b>hotplug<span>.</span></button><small>Local AI browser gateway.</small><small>v0.2</small></footer></>;
+}
+
+function Admin() {
+  const [providers, setProviders] = useState([]), [keys, setKeys] = useState([]), [notice, setNotice] = useState(''), [busy, setBusy] = useState(''), [loading, setLoading] = useState(true);
+  const refresh = async () => { setLoading(true); const [providerResult, keyResult] = await Promise.allSettled([api('/api/admin/providers'), api('/api/admin/keys')]); if (providerResult.status === 'fulfilled') setProviders(providerResult.value.providers); else setNotice(providerResult.reason.message); if (keyResult.status === 'fulfilled') setKeys(keyResult.value.keys); else setNotice(keyResult.reason.message); setLoading(false); };
+  useEffect(() => { refresh(); }, []);
+  const login = async id => { setBusy(id); try { const result = await api(`/api/admin/providers/${id}/login`, { method: 'POST' }); setNotice(result.message); await refresh(); } catch (error) { setNotice(error.message); } finally { setBusy(''); } };
+  const verify = async id => { setBusy(id); try { await api(`/api/admin/providers/${id}/verify`, { method: 'POST' }); setNotice('Session verified. This provider is ready.'); await refresh(); } catch (error) { setNotice(error.message); } finally { setBusy(''); } };
+  return <main className="admin-page">{notice && <div className="notice" onClick={() => setNotice('')}>{notice}</div>}<div className="admin-heading"><div><label>CONTROL CENTER</label><h1>HotPlug <i>gateway.</i></h1><p>Every status below comes from the local service—no sample connections.</p></div><span className="local-badge"><b /> LOCAL ONLY</span></div><div className="admin-grid"><section className="panel"><div className="panel-title"><div><label>PROVIDER SESSIONS</label><h2>Browser profiles</h2></div><button className="icon-button" onClick={refresh}><FiRefreshCw /></button></div>{loading && providers.length === 0 ? <div className="provider-loading">Loading providers…</div> : providers.length === 0 ? <div className="provider-loading error">Providers could not be loaded. <button onClick={refresh}>Retry</button></div> : providers.map(p => <div className="provider-row" key={p.id}><span className={'picon ' + p.id}>{p.name[0]}</span><div className="provider-info"><strong>{p.name}</strong><small>{p.model} · {p.connected ? 'Local profile found' : 'Not signed in'}</small></div><span className={'session-status ' + (p.connected ? 'ready' : 'off')}><b /> {p.running ? 'Browser open' : p.connected ? 'Profile saved' : 'Disconnected'}</span><button className="connect-button" disabled={busy === p.id} onClick={() => p.connected ? verify(p.id) : login(p.id)}>{busy === p.id ? 'Opening…' : p.connected ? 'Verify' : 'Sign In'} <FiArrowUpRight /></button></div>)}</section><Keys keys={keys} refresh={refresh} setNotice={setNotice} /></div><Chat providers={providers.filter(p => p.connected)} setNotice={setNotice} /><section className="endpoint-panel"><div><label>OPENCLAW ENDPOINT</label><h2>http://127.0.0.1:8787/v1</h2><p>Use a generated key as the Bearer token.</p></div></section></main>;
+}
+
+function Keys({ keys, refresh, setNotice }) {
+  const [name, setName] = useState('OpenClaw');
+  const create = async event => { event.preventDefault(); try { const key = await api('/api/admin/keys', { method: 'POST', body: JSON.stringify({ name }) }); await navigator.clipboard.writeText(key.token); setNotice(`Key created and copied: ${key.token}`); await refresh(); } catch (error) { setNotice(error.message); } };
+  const remove = async id => { try { await api(`/api/admin/keys/${id}`, { method: 'DELETE' }); await refresh(); } catch (error) { setNotice(error.message); } };
+  return <section className="panel"><div className="panel-title"><div><label>ACCESS CONTROL</label><h2>API keys</h2></div><FiKey /></div><form className="key-form" onSubmit={create}><input value={name} onChange={e => setName(e.target.value)} required /><button className="button"><FiPlus /> Create</button></form>{keys.length === 0 ? <p className="panel-copy">No keys created yet.</p> : keys.map(k => <div className="key-row" key={k.id}><div><strong>{k.name}</strong><small>{k.prefix}••••••</small></div><button title="Revoke" onClick={() => remove(k.id)}><FiTrash2 /></button></div>)}</section>;
+}
+
+function Chat({ providers, setNotice }) {
+  const [prompt, setPrompt] = useState(''), [messages, setMessages] = useState([]), [sending, setSending] = useState(false);
+  const send = async event => { event.preventDefault(); if (!prompt.trim() || !providers.length) return; const text = prompt; setPrompt(''); setMessages(m => [...m, { role: 'user', text }]); setSending(true); try { const response = await fetch('/api/admin/test-chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: text }] }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error?.message || `Request failed (${response.status})`); const provider = response.headers.get('x-hotplug-provider') || result.system_fingerprint?.replace('hotplug-', '') || 'auto'; setMessages(m => [...m, { role: 'assistant', text: result.choices[0].message.content, provider }]); } catch (error) { setMessages(m => [...m, { role: 'error', text: error.message }]); setNotice(error.message); } finally { setSending(false); } };
+  return <section className="chat-panel"><div className="panel-title"><div><label>LIVE BROWSER TEST</label><h2>Test chat</h2></div><span>{providers.length} profiles · model auto</span></div><div className="chat-window">{messages.length === 0 ? <div className="chat-empty"><FiCpu /><strong>{providers.length ? 'Ready for a real test' : 'Sign in to a provider first'}</strong><small>Each prompt is auto-routed to the best signed-in provider for speed and task fit.</small></div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'user' ? 'You' : m.role === 'error' ? 'Error' : m.provider ? `Auto → ${m.provider}` : 'Assistant'}</small><p>{m.text}</p></div>)}</div><form className="chat-form" onSubmit={send}><input value={prompt} onChange={e => setPrompt(e.target.value)} disabled={!providers.length || sending} placeholder={providers.length ? 'Ask a connected AI…' : 'Sign in above first'} /><button className="button" disabled={!providers.length || sending}><FiSend /> {sending ? 'Waiting…' : 'Send'}</button></form></section>;
+}
+
+createRoot(document.getElementById('root')).render(<App />);
