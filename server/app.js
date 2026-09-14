@@ -21,8 +21,8 @@ export function createApp({ sessions = new ProviderSessionManager(), store = new
   const reqProtocol = req => req.get('x-forwarded-proto') || req.protocol;
   const reqHost = req => req.get('x-forwarded-host') || req.get('host');
   const apiUrlFor = req => publicHost ? `https://${publicHost}/v1` : `${reqProtocol(req)}://${reqHost(req)}/v1`;
-  app.get('/api/health', async (_, res) => res.json({ status: 'ok', providers: await sessions.list() }));
-  app.get('/api/config', (req, res) => res.json({ apiUrl: apiUrlFor(req), model: 'auto', publicHost: publicHost || null }));
+  app.get('/api/health', async (_, res) => res.json({ status: 'ok', browser: sessions.remote ? 'browserless' : 'local', providers: await sessions.list() }));
+  app.get('/api/config', (req, res) => res.json({ apiUrl: apiUrlFor(req), model: 'auto', publicHost: publicHost || null, browser: sessions.remote ? 'browserless' : 'local' }));
   app.get('/api/auth/status', localAdmin, (req, res) => res.json({ authenticated: auth.authenticated(req), email: auth.authenticated(req) ? 'xankiiza@gmail.com' : null }));
   app.post('/api/auth/login', localAdmin, (req, res) => { if (!auth.validCredentials(req.body?.email, req.body?.password)) return res.status(401).json({ error: { message: 'Incorrect email or password.', type: 'authentication_error' } }); const token = auth.createSession(); res.setHeader('Set-Cookie', auth.cookie(token)); res.json({ authenticated: true, email: 'xankiiza@gmail.com' }); });
   app.post('/api/auth/logout', localAdmin, signedIn, (req, res) => { auth.revoke(req); res.setHeader('Set-Cookie', auth.clearCookie()); res.json({ authenticated: false }); });

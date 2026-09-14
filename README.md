@@ -65,9 +65,24 @@ NODE_ENV=production
 HOTPLUG_PUBLIC_HOST=hotplug.xankiiza.com
 HOTPLUG_HOST=0.0.0.0
 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+HOTPLUG_BROWSERLESS_TOKEN=your_browserless_token
+HOTPLUG_BROWSERLESS_ORIGIN=https://production-sfo.browserless.io
 ```
 
-After the first deploy, SSH in and run `npm run install-browser` if you need provider automation on the server.
+Hostinger cannot open a local Chromium window. Set `HOTPLUG_BROWSERLESS_TOKEN` so provider **Sign In** connects to [Browserless](https://www.browserless.io/), returns a **live browser link**, and you finish login in that tab. Your Browserless plan must include **LiveURL** (hybrid automation). After sign-in, click **Verify** so HotPlug saves the Browserless profile (`hotplug-<provider>`).
+
+JSON for hPanel env import:
+
+```json
+{
+  "NODE_ENV": "production",
+  "HOTPLUG_PUBLIC_HOST": "hotplug.xankiiza.com",
+  "HOTPLUG_HOST": "0.0.0.0",
+  "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1",
+  "HOTPLUG_BROWSERLESS_TOKEN": "your_browserless_token",
+  "HOTPLUG_BROWSERLESS_ORIGIN": "https://production-sfo.browserless.io"
+}
+```
 
 If the build log shows `✓ built in …ms` but deployment still fails, the build actually succeeded — check **Runtime Logs** in hPanel for the startup error. Common fixes:
 
@@ -75,3 +90,38 @@ If the build log shows `✓ built in …ms` but deployment still fails, the buil
 - Ensure Hostinger injects `PORT` (the app listens on `process.env.PORT`)
 - Set `HOTPLUG_HOST=0.0.0.0` and `HOTPLUG_PUBLIC_HOST=hotplug.xankiiza.com`
 - Entry file must be `server.js`
+
+### Termux home server (proot Ubuntu)
+
+Install inside proot Ubuntu on Android Termux:
+
+```bash
+# On Termux — copy deploy-termux.sh to ~/deploy-hotplug.sh first, or clone the repo to termux home
+bash ~/run-remote-install.sh
+```
+
+This installs Node, Playwright Chromium + system deps, builds the app, provisions OpenClaw, and writes `/root/start-hotplug.sh`.
+
+Boot HotPlug + OpenClaw + Cloudflare tunnel:
+
+```bash
+bash ~/start-stack.sh
+```
+
+Add `hotplug.xankiiza.com` to your existing Cloudflare tunnel:
+
+```bash
+bash ~/setup-hotplug-tunnel.sh   # run from repo scripts/ on termux home after install
+```
+
+Provider sign-in on a headless phone uses a virtual display (`Xvfb`). Use phone VNC to complete login, or set `HOTPLUG_BROWSERLESS_TOKEN` for a live browser link in the admin UI.
+
+Data and browser profiles live at `/root/hotplug-data/` inside proot.
+
+### Docker
+
+```bash
+docker compose up -d --build
+```
+
+Set `HOTPLUG_BROWSERLESS_TOKEN` when the container cannot run local Chromium (e.g. cloud VPS).

@@ -1,0 +1,19 @@
+services:
+  hotplug:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      HOTPLUG_HOST: 0.0.0.0
+      HOTPLUG_PUBLIC_HOST: ${HOTPLUG_PUBLIC_HOST:-}
+      HOTPLUG_HEADLESS: "true"
+      HOTPLUG_BROWSERLESS_TOKEN: ${HOTPLUG_BROWSERLESS_TOKEN:-}
+      HOTPLUG_BROWSERLESS_ORIGIN: ${HOTPLUG_BROWSERLESS_ORIGIN:-https://production-sfo.browserless.io}
+    volumes:
+      - hotplug-data:/app/data
+
+volumes:
+  hotplug-data:
