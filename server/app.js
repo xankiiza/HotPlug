@@ -9,12 +9,20 @@ import { AuthManager } from './auth.js';
 
 export function createApp({ sessions = new ProviderSessionManager(), store = new Store(), auth = new AuthManager() } = {}) {
   const app = express();
-  app.use(cors({ origin: (origin, cb) => !origin || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ? cb(null, true) : cb(new Error('Origin not allowed')) }));
+  const publicHost = process.env.HOTPLUG_PUBLIC_HOST || '';
+  if (publicHost) app.set('trust proxy', 1);
+  const allowedOrigin = origin => !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || (publicHost && origin === `https://${publicHost}`);
+  app.use(cors({ origin: (origin, cb) => allowedOrigin(origin) ? cb(null, true) : cb(new Error('Origin not allowed')) }));
   app.use(express.json({ limit: '1mb' }));
-  const localAdmin = (req, res, next) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) ? next() : res.status(403).json({ error: { message: 'Admin is available from localhost only.' } });
+  const adminAllowed = req => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) || (publicHost && req.hostname === publicHost);
+  const localAdmin = (req, res, next) => adminAllowed(req) ? next() : res.status(403).json({ error: { message: 'Admin is unavailable from this host.' } });
   const signedIn = (req, res, next) => auth.authenticated(req) ? next() : res.status(401).json({ error: { message: 'Sign in to HotPlug first.', type: 'authentication_error' } });
   const apiKey = async (req, res, next) => (await store.verifyKey((req.headers.authorization || '').replace(/^Bearer\s+/i, ''))) ? next() : res.status(401).json({ error: { message: 'Valid HotPlug API key required.', type: 'authentication_error' } });
+  const reqProtocol = req => req.get('x-forwarded-proto') || req.protocol;
+  const reqHost = req => req.get('x-forwarded-host') || req.get('host');
+  const apiUrlFor = req => publicHost ? `https://${publicHost}/v1` : `${reqProtocol(req)}://${reqHost(req)}/v1`;
   app.get('/api/health', async (_, res) => res.json({ status: 'ok', providers: await sessions.list() }));
+  app.get('/api/config', (req, res) => res.json({ apiUrl: apiUrlFor(req), model: 'auto', publicHost: publicHost || null }));
   app.get('/api/auth/status', localAdmin, (req, res) => res.json({ authenticated: auth.authenticated(req), email: auth.authenticated(req) ? 'xankiiza@gmail.com' : null }));
   app.post('/api/auth/login', localAdmin, (req, res) => { if (!auth.validCredentials(req.body?.email, req.body?.password)) return res.status(401).json({ error: { message: 'Incorrect email or password.', type: 'authentication_error' } }); const token = auth.createSession(); res.setHeader('Set-Cookie', auth.cookie(token)); res.json({ authenticated: true, email: 'xankiiza@gmail.com' }); });
   app.post('/api/auth/logout', localAdmin, signedIn, (req, res) => { auth.revoke(req); res.setHeader('Set-Cookie', auth.clearCookie()); res.json({ authenticated: false }); });

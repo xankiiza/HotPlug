@@ -1,10 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { chromium } from 'playwright';
 import { providers } from './providers.js';
 
 export class ProviderSessionManager {
-  constructor(root = process.env.HOTPLUG_DATA_DIR || path.resolve('data'), chromiumApi = chromium) { this.root = root; this.chromium = chromiumApi; this.contexts = new Map(); this.queues = new Map(); this.metrics = new Map(); }
+  constructor(root = process.env.HOTPLUG_DATA_DIR || path.resolve('data'), chromiumApi = null) { this.root = root; this.chromiumApi = chromiumApi; this.chromiumModule = null; this.contexts = new Map(); this.queues = new Map(); this.metrics = new Map(); }
+  async chromium() {
+    if (this.chromiumApi) return this.chromiumApi;
+    if (!this.chromiumModule) {
+      const { chromium } = await import('playwright');
+      this.chromiumModule = chromium;
+    }
+    return this.chromiumModule;
+  }
   async list() { return Promise.all(Object.entries(providers).map(async ([id, p]) => ({ id, name: p.name, model: p.model, connected: await this.hasProfile(id), running: this.contexts.has(id) }))); }
   async hasProfile(id) { try { return (await fs.readdir(path.join(this.root, 'profiles', id))).length > 0; } catch { return false; } }
   definition(id) { const p = providers[id]; if (!p) throw new Error(`Unsupported provider: ${id}`); return p; }
@@ -15,7 +22,7 @@ export class ProviderSessionManager {
   taskType(prompt) { const text = prompt.toLowerCase(); if (/code|debug|function|class|sql|api|typescript|python/.test(text)) return 'coding'; if (/analy[sz]|reason|compare|research|explain/.test(text)) return 'analysis'; if (/write|story|creative|poem|brand/.test(text)) return 'creative'; return 'general'; }
   async ranked(prompt) { const task = this.taskType(prompt), list = (await this.list()).filter(p => p.connected); const quality = { claude: 95, chatgpt: 93, gemini: 90, deepseek: 86 }; const affinity = { coding: { deepseek: 20, claude: 18, chatgpt: 14, gemini: 10 }, analysis: { claude: 20, gemini: 17, chatgpt: 15, deepseek: 10 }, creative: { claude: 20, chatgpt: 18, gemini: 12, deepseek: 8 }, general: { gemini: 18, chatgpt: 16, claude: 15, deepseek: 12 } }; return list.map(p => { const m = this.metrics.get(p.id) || {}; const speed = m.averageMs ? Math.max(0, 25 - m.averageMs / 2000) : 12; const reliability = (m.successes || 0) * 2 - (m.failures || 0) * 8; return { ...p, score: quality[p.id] + affinity[task][p.id] + speed + reliability + (p.running ? 3 : 0) }; }).sort((a, b) => b.score - a.score); }
   async sendAuto(prompt) { const candidates = await this.ranked(prompt); if (!candidates.length) throw new Error('No signed-in provider profiles are available. Sign in to at least one provider in HotPlug Admin.'); const failures = []; for (const provider of candidates) { const started = Date.now(); try { const content = await this.send(provider.id, prompt); const elapsed = Date.now() - started, old = this.metrics.get(provider.id) || { successes: 0, failures: 0 }; this.metrics.set(provider.id, { ...old, successes: old.successes + 1, averageMs: old.averageMs ? Math.round(old.averageMs * .7 + elapsed * .3) : elapsed }); return { content, provider: provider.id, latencyMs: elapsed }; } catch (error) { const old = this.metrics.get(provider.id) || { successes: 0, failures: 0 }; this.metrics.set(provider.id, { ...old, failures: old.failures + 1 }); failures.push(`${provider.name}: ${error.message}`); } } throw new Error(`All signed-in providers failed. ${failures.join(' | ')}`); }
-  async context(id, headless) { if (this.contexts.has(id)) return this.contexts.get(id); const dir = path.join(this.root, 'profiles', id); await fs.mkdir(dir, { recursive: true }); const context = await this.chromium.launchPersistentContext(dir, { headless, viewport: { width: 1400, height: 900 }, args: ['--disable-blink-features=AutomationControlled'] }); context.on('close', () => this.contexts.delete(id)); this.contexts.set(id, context); return context; }
+  async context(id, headless) { if (this.contexts.has(id)) return this.contexts.get(id); const dir = path.join(this.root, 'profiles', id); await fs.mkdir(dir, { recursive: true }); const browser = await this.chromium(); const context = await browser.launchPersistentContext(dir, { headless, viewport: { width: 1400, height: 900 }, args: ['--disable-blink-features=AutomationControlled'] }); context.on('close', () => this.contexts.delete(id)); this.contexts.set(id, context); return context; }
   async page(context, url) { let page = context.pages().find(p => p.url().startsWith(new URL(url).origin)); if (!page) page = context.pages()[0] || await context.newPage(); if (!page.url().startsWith(new URL(url).origin)) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }); return page; }
   async firstVisible(page, selectors, timeout) { const end = Date.now() + timeout; while (Date.now() < end) { for (const selector of selectors) { const item = page.locator(selector).last(); if (await item.isVisible().catch(() => false)) return item; } await page.waitForTimeout(400); } return null; }
   async responseCount(page, selectors) { let count = 0; for (const selector of selectors) count = Math.max(count, await page.locator(selector).count()); return count; }

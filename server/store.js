@@ -19,11 +19,15 @@ export class Store {
   async createKey(name = 'OpenClaw') {
     const token = `hp_${crypto.randomBytes(24).toString('base64url')}`;
     const data = await this.read();
-    const record = { id: crypto.randomUUID(), name: String(name).slice(0, 80), prefix: token.slice(0, 11), hash: this.hash(token), createdAt: new Date().toISOString() };
+    const record = { id: crypto.randomUUID(), name: String(name).slice(0, 80), prefix: token.slice(0, 11), token, hash: this.hash(token), createdAt: new Date().toISOString() };
     data.keys.push(record); await this.write(data);
-    return { ...record, token, hash: undefined };
+    return { ...record, hash: undefined };
   }
   async deleteKey(id) { const data = await this.read(); const before = data.keys.length; data.keys = data.keys.filter(k => k.id !== id); await this.write(data); return before !== data.keys.length; }
-  async verifyKey(token) { if (!token) return false; const hash = this.hash(token); return (await this.read()).keys.some(k => crypto.timingSafeEqual(Buffer.from(k.hash), Buffer.from(hash))); }
+  async verifyKey(token) {
+    if (!token) return false;
+    const hash = this.hash(token);
+    return (await this.read()).keys.some(k => (k.token && k.token === token) || (k.hash && k.hash.length === hash.length && crypto.timingSafeEqual(Buffer.from(k.hash), Buffer.from(hash))));
+  }
   hash(token) { return crypto.createHash('sha256').update(token).digest('hex'); }
 }

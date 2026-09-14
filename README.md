@@ -14,12 +14,12 @@ Open the Vite URL, choose **Get Started**, and click **Sign In** beside a provid
 
 ## OpenClaw
 
-- Base URL: `http://127.0.0.1:8787/v1`
-- API key: the `hp_...` value shown once when a key is created
+- Base URL: `https://hotplug.xankiiza.com/v1` (production) or `http://127.0.0.1:8787/v1` (local)
+- API key: the `hp_...` value shown once when a key is created in the dashboard
 - Model: `auto` (HotPlug picks the best signed-in provider per request based on speed, reliability, and task fit)
 
 ```javascript
-baseURL: "http://127.0.0.1:8787/v1"
+baseURL: "https://hotplug.xankiiza.com/v1"
 apiKey: "hp_..."
 model: "auto"
 ```
@@ -33,4 +33,39 @@ npm run build
 npm start
 ```
 
-The service intentionally binds to `127.0.0.1`. To use it from another machine, place it behind an authenticated private tunnel or reverse proxy; do not expose the browser-session admin routes publicly.
+### Production (`hotplug.xankiiza.com`)
+
+Set these environment variables on the server:
+
+```bash
+HOTPLUG_HOST=0.0.0.0
+HOTPLUG_PUBLIC_HOST=hotplug.xankiiza.com
+PORT=8787
+```
+
+Place the service behind HTTPS (nginx/Caddy) and proxy to port `8787`. The dashboard and API both use the same origin, so OpenClaw only needs the public `/v1` URL and an `hp_...` key.
+
+### Hostinger (Node.js app)
+
+In hPanel → Websites → Node.js, use:
+
+| Setting | Value |
+|---------|-------|
+| Node version | **20.x** |
+| Application root | repository root |
+| Build command | `npm run build` |
+| Start command | `npm start` |
+| Entry file | `server/index.js` (if asked) |
+
+Environment variables:
+
+```bash
+NODE_ENV=production
+HOTPLUG_PUBLIC_HOST=hotplug.xankiiza.com
+HOTPLUG_HOST=0.0.0.0
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+```
+
+After the first deploy, SSH in and run `npm run install-browser` if you need provider automation on the server.
+
+If the build log shows `✓ built in …ms` but deployment still fails, the problem is usually the **start step** (wrong port/host binding or missing `dist/`). This repo now binds to `0.0.0.0` automatically in production and verifies `dist/index.html` before starting.

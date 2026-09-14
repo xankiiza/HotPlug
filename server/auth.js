@@ -15,6 +15,6 @@ export class AuthManager {
   tokenFrom(req) { const match = String(req.headers.cookie || '').match(/(?:^|;\s*)hotplug_session=([^;]+)/); return match ? match[1] : ''; }
   authenticated(req) { const token = this.tokenFrom(req), expires = this.sessions.get(token); if (!expires || expires < Date.now()) { if (token) this.sessions.delete(token); return false; } return true; }
   revoke(req) { this.sessions.delete(this.tokenFrom(req)); }
-  cookie(token) { return `hotplug_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`; }
-  clearCookie() { return 'hotplug_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'; }
+  cookie(token) { const secure = process.env.HOTPLUG_PUBLIC_HOST ? '; Secure' : ''; return `hotplug_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`; }
+  clearCookie() { const secure = process.env.HOTPLUG_PUBLIC_HOST ? '; Secure' : ''; return `hotplug_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`; }
 }
