@@ -51,11 +51,12 @@ In hPanel → Websites → Node.js, use:
 
 | Setting | Value |
 |---------|-------|
-| Node version | **20.x** |
+| Node version | **20.x** (18+ works) |
 | Application root | repository root |
 | Build command | `npm run build` |
 | Start command | `npm start` |
-| Entry file | `server/index.js` (if asked) |
+| Entry file | `server.js` |
+| Output directory | leave **empty** (this is a Node app, not a static export) |
 
 Environment variables:
 
@@ -68,4 +69,9 @@ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 After the first deploy, SSH in and run `npm run install-browser` if you need provider automation on the server.
 
-If the build log shows `✓ built in …ms` but deployment still fails, the problem is usually the **start step** (wrong port/host binding or missing `dist/`). This repo now binds to `0.0.0.0` automatically in production and verifies `dist/index.html` before starting.
+If the build log shows `✓ built in …ms` but deployment still fails, the build actually succeeded — check **Runtime Logs** in hPanel for the startup error. Common fixes:
+
+- Leave **Output directory** empty (do not set `dist`)
+- Ensure Hostinger injects `PORT` (the app listens on `process.env.PORT`)
+- Set `HOTPLUG_HOST=0.0.0.0` and `HOTPLUG_PUBLIC_HOST=hotplug.xankiiza.com`
+- Entry file must be `server.js`
