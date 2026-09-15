@@ -205,18 +205,23 @@ export class ProviderSessionManager {
   async send(id, prompt) {
     const run = async () => {
       const p = this.definition(id);
-      const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
-      const page = await this.page(context, p.url);
-      await this.dismissOverlays(page);
-      const input = await this.firstVisible(page, p.input, 12000);
-      if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
-      const before = await this.responseCount(page, p.response);
-      await this.focusAndType(page, input, prompt);
-      await this.submitPrompt(page, p);
-      const answer = await this.waitForAnswer(page, p.response, before);
-      if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds. Re-verify the session in Admin if Gemini shows a login or consent screen.`);
-      if (process.env.HOTPLUG_DROP_BROWSER === 'true') await this.dropSession(id);
-      return answer;
+      try {
+        const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
+        const page = await this.page(context, p.url);
+        await this.dismissOverlays(page);
+        const input = await this.firstVisible(page, p.input, 12000);
+        if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
+        const before = await this.responseCount(page, p.response);
+        await this.focusAndType(page, input, prompt);
+        await this.submitPrompt(page, p);
+        const answer = await this.waitForAnswer(page, p.response, before);
+        if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds. Re-verify the session in Admin if Gemini shows a login or consent screen.`);
+        return answer;
+      } catch (error) {
+        // Stale Chromium sessions after a failed reply cause endless 90s timeouts — always recycle.
+        await this.dropSession(id);
+        throw error;
+      }
     };
     const previous = this.queues.get(id) || Promise.resolve();
     const next = previous.catch(() => {}).then(run);
