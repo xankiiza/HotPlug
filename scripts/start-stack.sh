@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Boot HotPlug, OpenClaw, and Cloudflare tunnel on Termux (proot Ubuntu).
+# Boot HotPlug + OpenClaw + Cloudflare tunnel in ONE proot Ubuntu session.
 set -euo pipefail
 export PATH="/data/data/com.termux/files/usr/bin:$PATH"
 PD=/data/data/com.termux/files/usr/bin/proot-distro
@@ -9,30 +9,25 @@ echo "Stopping stale proot sessions..."
 for pid in $(ps aux | grep '/proot ' | grep -v grep | awk '{print $2}'); do
   kill -9 "$pid" 2>/dev/null || true
 done
-sleep 3
+sleep 4
 
-echo "Starting HotPlug..."
-nohup $PD login ubuntu -- bash -lc '/root/start-hotplug.sh' > "$TERMUX_HOME/hotplug.log" 2>&1 &
-sleep 6
-curl -sf http://127.0.0.1:8787/api/health >/dev/null || {
-  echo "HotPlug failed to start"
-  tail -20 "$TERMUX_HOME/hotplug.log" 2>/dev/null || true
-  $PD login ubuntu -- bash -lc 'tail -20 /root/hotplug.log' 2>/dev/null || true
-  exit 1
-}
-echo "HotPlug OK"
+echo "Starting stack (single proot)..."
+nohup $PD login ubuntu -- bash -lc '/root/start-services.sh' > "$TERMUX_HOME/stack.log" 2>&1 &
 
-echo "Starting OpenClaw..."
-nohup $PD login ubuntu -- bash -lc '
-  export NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
-  export OPENCLAW_NO_RESPAWN=1
-  mkdir -p /var/tmp/openclaw-compile-cache
-  exec openclaw gateway --bind loopback --port 18789
-' > "$TERMUX_HOME/openclaw-gateway.log" 2>&1 &
-sleep 8
-curl -sf http://127.0.0.1:18789/ >/dev/null && echo "OpenClaw OK" || echo "OpenClaw still starting..."
+for i in $(seq 1 60); do
+  hp=0; oc=0; tun=0
+  curl -sf http://127.0.0.1:8787/api/health >/dev/null && hp=1
+  curl -sf http://127.0.0.1:18789/ >/dev/null && oc=1
+  grep -q "Registered tunnel connection" "$TERMUX_HOME/stack.log" 2>/dev/null && tun=1
+  if [ "$hp" = 1 ] && [ "$oc" = 1 ] && [ "$tun" = 1 ]; then
+    echo "Stack OK (HotPlug + OpenClaw + tunnel)"
+    exit 0
+  fi
+  [ $((i % 10)) -eq 0 ] && echo "waiting stack... hp=$hp oc=$oc tun=$tun (${i}x3s)"
+  sleep 3
+done
 
-echo "Starting Cloudflare tunnel..."
-nohup $PD login ubuntu -- bash -lc 'exec cloudflared tunnel --protocol http2 run max-homeserver' > "$TERMUX_HOME/cloudflared.log" 2>&1 &
-sleep 6
-curl -s -m 15 https://hotplug.xankiiza.com/api/config && echo || echo "Tunnel warming up — retry in 30s"
+echo "Stack incomplete — check stack.log"
+tail -30 "$TERMUX_HOME/stack.log" 2>/dev/null || true
+$PD login ubuntu -- bash -lc 'tail -20 /root/openclaw.log 2>/dev/null; tail -10 /root/hotplug.log 2>/dev/null' || true
+exit 1
