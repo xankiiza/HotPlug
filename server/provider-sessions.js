@@ -258,12 +258,12 @@ export class ProviderSessionManager {
         const input = await this.firstVisible(page, p.input, 15000);
         if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
         const before = await this.responseCount(page, p.response);
-        console.log(`[hotplug] ${id}: typing prompt (${prompt.length} chars), responses before=${before}`);
+        console.error(`[hotplug] ${id}: typing prompt (${prompt.length} chars), responses before=${before}`);
         await this.focusAndType(page, input, prompt);
         await this.submitPrompt(page, p);
         const answer = await this.waitForAnswer(page, p.response, before);
         if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds. Re-verify the session in Admin if Gemini shows a login or consent screen.`);
-        console.log(`[hotplug] ${id}: got reply (${answer.length} chars)`);
+        console.error(`[hotplug] ${id}: got reply (${answer.length} chars)`);
         return answer;
       } catch (error) {
         console.error(`[hotplug] ${id}: send failed:`, error.message);
