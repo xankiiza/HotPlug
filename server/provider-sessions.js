@@ -162,7 +162,10 @@ export class ProviderSessionManager {
     const page = await this.page(context, p.url);
     if (draft) {
       const editor = await this.firstVisible(page, p.input, 10000);
-      if (editor) { await editor.click(); await editor.fill(draft); await page.waitForTimeout(700); }
+      if (editor) {
+        await this.focusAndType(page, editor, draft);
+        await page.waitForTimeout(700);
+      }
     }
     const elements = await page.locator('textarea, [contenteditable="true"], input').evaluateAll(items => items.filter(item => {
       const box = item.getBoundingClientRect();
