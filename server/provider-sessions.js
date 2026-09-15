@@ -216,34 +216,50 @@ export class ProviderSessionManager {
     const { fileURLToPath } = await import('node:url');
     const worker = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'chat-worker.mjs');
     const previous = this.queues.get(id) || Promise.resolve();
-    const run = () => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [worker, id, prompt], {
-        env: {
-          ...process.env,
-          HOTPLUG_DATA_DIR: this.root,
-          HOTPLUG_HEADLESS: process.env.HOTPLUG_HEADLESS || 'true',
-          HOTPLUG_CHAT_WORKER: 'false', // prevent recursion inside worker
-          HOTPLUG_KEEP_BROWSER: 'false',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
+    const run = async () => {
+      await this.dropSession(id);
+      await this.killOrphanBrowsers(id);
+      return new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [worker, id, prompt], {
+          env: {
+            ...process.env,
+            HOTPLUG_DATA_DIR: this.root,
+            HOTPLUG_HEADLESS: process.env.HOTPLUG_HEADLESS || 'true',
+            HOTPLUG_CHAT_WORKER: 'false',
+            HOTPLUG_KEEP_BROWSER: 'false',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let out = '', err = '';
+        child.stdout.on('data', chunk => { out += chunk; });
+        child.stderr.on('data', chunk => { err += chunk; });
+        child.on('error', reject);
+        child.on('close', code => {
+          const line = out.trim().split('\n').filter(Boolean).at(-1) || '';
+          try {
+            const parsed = JSON.parse(line || '{}');
+            if (parsed.ok && parsed.content) return resolve(parsed.content);
+            reject(new Error(parsed.error || err.trim().split('\n').at(-1) || `chat-worker exited ${code}`));
+          } catch {
+            reject(new Error(err.trim().split('\n').at(-1) || line || `chat-worker exited ${code}`));
+          }
+        });
       });
-      let out = '', err = '';
-      child.stdout.on('data', chunk => { out += chunk; });
-      child.stderr.on('data', chunk => { err += chunk; });
-      child.on('error', reject);
-      child.on('close', code => {
-        try {
-          const parsed = JSON.parse(out.trim() || '{}');
-          if (parsed.ok && parsed.content) return resolve(parsed.content);
-          reject(new Error(parsed.error || err.trim() || `chat-worker exited ${code}`));
-        } catch {
-          reject(new Error(err.trim() || out.trim() || `chat-worker exited ${code}`));
-        }
-      });
-    });
+    };
     const next = previous.catch(() => {}).then(run);
     this.queues.set(id, next);
     return next.finally(() => { if (this.queues.get(id) === next) this.queues.delete(id); });
+  }
+
+  async killOrphanBrowsers(id) {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+      const profile = path.join(this.root, 'profiles', id).replace(/\\/g, '/');
+      await execFileAsync('bash', ['-lc', `pkill -f ${JSON.stringify(profile)} 2>/dev/null || true`]);
+      await new Promise(r => setTimeout(r, 500));
+    } catch { /* ignore */ }
   }
 
   async sendInProcess(id, prompt) {
