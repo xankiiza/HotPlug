@@ -158,7 +158,7 @@ export class ProviderSessionManager {
 
   async diagnose(id, draft = '') {
     const p = this.definition(id);
-    const context = await this.context(id, false);
+    const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
     const page = await this.page(context, p.url);
     if (draft) {
       const editor = await this.firstVisible(page, p.input, 10000);
@@ -204,16 +204,14 @@ export class ProviderSessionManager {
       const p = this.definition(id);
       const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
       const page = await this.page(context, p.url);
+      await this.dismissOverlays(page);
       const input = await this.firstVisible(page, p.input, 12000);
       if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
       const before = await this.responseCount(page, p.response);
       await this.focusAndType(page, input, prompt);
-      const sendButton = await this.firstVisible(page, p.send || [], 3000);
-      if (sendButton) await sendButton.click({ force: true, timeout: 10000 }).catch(() => page.keyboard.press('Enter'));
-      else await page.keyboard.press('Enter');
+      await this.submitPrompt(page, p);
       const answer = await this.waitForAnswer(page, p.response, before);
-      if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds.`);
-      // Keep Chromium warm by default — cold starts on the phone exceed Cloudflare's 100s timeout.
+      if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds. Re-verify the session in Admin if Gemini shows a login or consent screen.`);
       if (process.env.HOTPLUG_DROP_BROWSER === 'true') await this.dropSession(id);
       return answer;
     };
@@ -223,13 +221,36 @@ export class ProviderSessionManager {
     return next.finally(() => { if (this.queues.get(id) === next) this.queues.delete(id); });
   }
 
+  async dismissOverlays(page) {
+    const labels = ['Accept all', 'I agree', 'Got it', 'Continue', 'Dismiss', 'No thanks', 'Not now'];
+    for (const label of labels) {
+      const btn = page.getByRole('button', { name: label }).first();
+      if (await btn.isVisible().catch(() => false)) await btn.click({ force: true }).catch(() => {});
+    }
+  }
+
+  async submitPrompt(page, p) {
+    // Prefer the Send button — Enter often just inserts a newline in Quill/Gemini.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const sendButton = await this.firstVisible(page, p.send || [], 2500);
+      if (sendButton) {
+        const disabled = await sendButton.isDisabled().catch(() => false);
+        if (!disabled) {
+          await sendButton.click({ force: true, timeout: 8000 }).catch(() => {});
+          return;
+        }
+      }
+      await page.keyboard.press(attempt === 0 ? 'Enter' : 'Control+Enter').catch(() => {});
+      await page.waitForTimeout(400);
+    }
+  }
+
   async focusAndType(page, input, prompt) {
     try {
       await input.click({ force: true, timeout: 5000 });
     } catch {
       await input.evaluate(el => { el.focus(); }).catch(() => {});
     }
-    // Quill/Gemini editors often reject Playwright fill(); clear then type.
     try {
       await page.keyboard.press('Control+A');
       await page.keyboard.press('Backspace');
@@ -246,7 +267,6 @@ export class ProviderSessionManager {
         return Boolean(el.value);
       }
       el.textContent = '';
-      el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: text }));
       document.execCommand('selectAll', false);
       const ok = document.execCommand('insertText', false, text);
       el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
@@ -384,14 +404,15 @@ export class ProviderSessionManager {
     while (Date.now() < end) {
       for (const selector of selectors) {
         const items = page.locator(selector);
-        if (await items.count() > before) {
+        const count = await items.count();
+        if (count > before) {
           const text = (await items.last().innerText().catch(() => '')).trim();
           if (text && text === last) stable++;
           else { last = text; stable = 0; }
-          if (last && stable >= 4) return last;
+          if (last && stable >= 3) return last;
         }
       }
-      await page.waitForTimeout(750);
+      await page.waitForTimeout(600);
     }
     return last || null;
   }
