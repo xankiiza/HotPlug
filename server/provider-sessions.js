@@ -207,10 +207,9 @@ export class ProviderSessionManager {
       const input = await this.firstVisible(page, p.input, 12000);
       if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
       const before = await this.responseCount(page, p.response);
-      await input.click();
-      await input.fill(prompt);
+      await this.focusAndType(page, input, prompt);
       const sendButton = await this.firstVisible(page, p.send || [], 3000);
-      if (sendButton) await sendButton.click();
+      if (sendButton) await sendButton.click({ force: true, timeout: 10000 }).catch(() => page.keyboard.press('Enter'));
       else await page.keyboard.press('Enter');
       const answer = await this.waitForAnswer(page, p.response, before);
       if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds.`);
@@ -222,6 +221,38 @@ export class ProviderSessionManager {
     const next = previous.catch(() => {}).then(run);
     this.queues.set(id, next);
     return next.finally(() => { if (this.queues.get(id) === next) this.queues.delete(id); });
+  }
+
+  async focusAndType(page, input, prompt) {
+    try {
+      await input.click({ force: true, timeout: 5000 });
+    } catch {
+      await input.evaluate(el => { el.focus(); }).catch(() => {});
+    }
+    // Quill/Gemini editors often reject Playwright fill(); clear then type.
+    try {
+      await page.keyboard.press('Control+A');
+      await page.keyboard.press('Backspace');
+    } catch { /* ignore */ }
+    try {
+      await input.fill(prompt, { timeout: 4000 });
+      return;
+    } catch { /* fall through */ }
+    const setOk = await input.evaluate((el, text) => {
+      el.focus();
+      if ('value' in el) {
+        el.value = text;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return Boolean(el.value);
+      }
+      el.textContent = '';
+      el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: text }));
+      document.execCommand('selectAll', false);
+      const ok = document.execCommand('insertText', false, text);
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }));
+      return ok || Boolean((el.innerText || '').trim());
+    }, prompt).catch(() => false);
+    if (!setOk) await page.keyboard.type(prompt, { delay: 5 });
   }
 
   taskType(prompt) {
