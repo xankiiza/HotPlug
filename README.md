@@ -16,13 +16,16 @@ Open the Vite URL, choose **Get Started**, and click **Sign In** beside a provid
 
 - Base URL: `https://hotplug.xankiiza.com/v1` (production) or `http://127.0.0.1:8787/v1` (local)
 - API key: the `hp_...` value shown once when a key is created in the dashboard
-- Model: `auto` (HotPlug picks the best signed-in provider per request based on speed, reliability, and task fit)
+- Model: `auto` (smart routing) or a specific provider: `gemini`, `deepseek`, `claude`, `chatgpt`
+- OpenClaw-style ids also work: `hotplug/auto`, `hotplug/gemini`, etc.
 
 ```javascript
 baseURL: "https://hotplug.xankiiza.com/v1"
 apiKey: "hp_..."
-model: "auto"
+model: "auto"          // or "gemini", "hotplug/gemini", ...
 ```
+
+List models: `GET /v1/models`. Pin a provider when auto-routing picks the wrong session or when debugging OpenClaw failures.
 
 The API returns standard OpenAI chat completion shapes (`chat.completion`, SSE `chat.completion.chunk`, and `usage` token counts) so OpenClaw and other OpenAI-compatible clients can plug in directly.
 

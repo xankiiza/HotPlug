@@ -9,6 +9,11 @@ import { Store } from '../server/store.js';
 const mockSessions = {
   list: async () => [{ id: 'gemini', name: 'Gemini', model: 'gemini-2.5-flash', connected: true, running: false }],
   sendAuto: async () => ({ content: 'Hello from HotPlug.', provider: 'gemini', latencyMs: 1200 }),
+  sendForModel: async (prompt, model) => {
+    if (model === 'auto') return mockSessions.sendAuto(prompt);
+    if (model === 'gemini') return { content: 'Hello from Gemini.', provider: 'gemini', latencyMs: 900, model: 'gemini' };
+    throw new Error(`Provider ${model} is not signed in. Open HotPlug Admin and sign in first.`);
+  },
 };
 
 async function withServer(run) {
@@ -26,14 +31,15 @@ async function withServer(run) {
   }
 }
 
-test('GET /v1/models returns only auto', async () => {
+test('GET /v1/models returns auto and provider models', async () => {
   await withServer(async (base, token) => {
     const res = await fetch(`${base}/v1/models`, { headers: { Authorization: `Bearer ${token}` } });
     const body = await res.json();
     assert.equal(res.status, 200);
     assert.equal(body.object, 'list');
-    assert.equal(body.data.length, 1);
-    assert.equal(body.data[0].id, 'auto');
+    assert.ok(body.data.some(m => m.id === 'auto'));
+    assert.ok(body.data.some(m => m.id === 'gemini'));
+    assert.ok(body.data.some(m => m.root === 'hotplug/gemini'));
   });
 });
 
@@ -61,7 +67,7 @@ test('POST /v1/chat/completions returns OpenAI-compatible shape', async () => {
   });
 });
 
-test('POST /v1/chat/completions ignores legacy provider model names', async () => {
+test('POST /v1/chat/completions honors specific provider model', async () => {
   await withServer(async (base, token) => {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
@@ -70,7 +76,35 @@ test('POST /v1/chat/completions ignores legacy provider model names', async () =
     });
     const body = await res.json();
     assert.equal(res.status, 200);
+    assert.equal(body.model, 'gemini');
+    assert.equal(body.choices[0].message.content, 'Hello from Gemini.');
+  });
+});
+
+test('POST /v1/chat/completions accepts hotplug/ prefix from OpenClaw', async () => {
+  await withServer(async (base, token) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'hotplug/auto', messages: [{ role: 'user', content: 'Hi' }] }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
     assert.equal(body.model, 'auto');
+  });
+});
+
+test('POST /v1/chat/completions rejects unknown model', async () => {
+  await withServer(async (base, token) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi' }] }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 400);
+    assert.equal(body.error.type, 'invalid_request_error');
+    assert.match(body.error.message, /Unknown model/);
   });
 });
 

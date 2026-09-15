@@ -15,16 +15,11 @@ const hotplugProvider = {
   api: 'openai-completions',
   authHeader: true,
   models: [
-    {
-      id: 'auto',
-      name: 'HotPlug Auto',
-      api: 'openai-completions',
-      reasoning: false,
-      input: ['text'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000,
-      maxTokens: 8192,
-    },
+    { id: 'auto', name: 'HotPlug Auto', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+    { id: 'gemini', name: 'HotPlug Gemini', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+    { id: 'deepseek', name: 'HotPlug DeepSeek', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+    { id: 'claude', name: 'HotPlug Claude', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+    { id: 'chatgpt', name: 'HotPlug ChatGPT', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
   ],
 };
 
@@ -37,7 +32,7 @@ try {
 
 config.agents = config.agents || {};
 config.agents.defaults = config.agents.defaults || {};
-config.agents.defaults.model = { ...(config.agents.defaults.model || {}), primary: 'hotplug/auto' };
+config.agents.defaults.model = { ...(config.agents.defaults.model || {}), primary: process.env.HOTPLUG_OPENCLAW_MODEL || 'hotplug/gemini' };
 
 config.models = config.models || {};
 config.models.mode = 'merge';

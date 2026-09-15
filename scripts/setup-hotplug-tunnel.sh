@@ -44,7 +44,7 @@ const p = '/root/.openclaw/openclaw.json';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.agents = c.agents || {};
 c.agents.defaults = c.agents.defaults || {};
-c.agents.defaults.model = { ...(c.agents.defaults.model || {}), primary: 'hotplug/auto' };
+c.agents.defaults.model = { ...(c.agents.defaults.model || {}), primary: 'hotplug/gemini' };
 c.models = c.models || {};
 c.models.mode = 'merge';
 c.models.providers = c.models.providers || {};
@@ -56,9 +56,16 @@ if (!hp.apiKey) {
   console.error('No HotPlug API key in openclaw.json — run provision-openclaw.mjs first');
   process.exit(1);
 }
+hp.models = [
+  { id: 'auto', name: 'HotPlug Auto', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+  { id: 'gemini', name: 'HotPlug Gemini', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+  { id: 'deepseek', name: 'HotPlug DeepSeek', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+  { id: 'claude', name: 'HotPlug Claude', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+  { id: 'chatgpt', name: 'HotPlug ChatGPT', api: 'openai-completions', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+];
 c.models.providers.hotplug = hp;
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
-console.log(JSON.stringify({ primary: c.agents.defaults.model.primary, baseUrl: hp.baseUrl, key: hp.apiKey.slice(0,15)+'...' }, null, 2));
+console.log(JSON.stringify({ primary: c.agents.defaults.model.primary, baseUrl: hp.baseUrl, key: hp.apiKey.slice(0,15)+'...', models: hp.models.map(m => m.id) }, null, 2));
 NODE"
 
 echo "=== restart stack ==="

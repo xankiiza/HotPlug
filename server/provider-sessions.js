@@ -213,7 +213,7 @@ export class ProviderSessionManager {
       if (sendButton) await sendButton.click();
       else await page.keyboard.press('Enter');
       const answer = await this.waitForAnswer(page, p.response, before);
-      if (!answer) throw new Error(`${p.name} did not return a readable response within 120 seconds.`);
+      if (!answer) throw new Error(`${p.name} did not return a readable response within 180 seconds.`);
       return answer;
     };
     const previous = this.queues.get(id) || Promise.resolve();
@@ -246,6 +246,18 @@ export class ProviderSessionManager {
       const reliability = (m.successes || 0) * 2 - (m.failures || 0) * 8;
       return { ...p, score: quality[p.id] + affinity[task][p.id] + speed + reliability + (p.running ? 3 : 0) };
     }).sort((a, b) => b.score - a.score);
+  }
+
+  async sendForModel(prompt, model = 'auto') {
+    const id = model === 'auto' ? null : model;
+    if (id) {
+      if (!providers[id]) throw new Error(`Unknown model "${id}".`);
+      if (!await this.hasProfile(id)) throw new Error(`Provider ${providers[id].name} is not signed in. Open HotPlug Admin and sign in first.`);
+      const started = Date.now();
+      const content = await this.send(id, prompt);
+      return { content, provider: id, latencyMs: Date.now() - started, model: id };
+    }
+    return this.sendAuto(prompt);
   }
 
   async sendAuto(prompt) {
@@ -331,7 +343,7 @@ export class ProviderSessionManager {
   }
 
   async waitForAnswer(page, selectors, before) {
-    const end = Date.now() + 120000;
+    const end = Date.now() + 180000;
     let last = '', stable = 0;
     while (Date.now() < end) {
       for (const selector of selectors) {
