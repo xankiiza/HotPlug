@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-process.on('uncaughtException', error => { console.error('[hotplug] uncaughtException:', error); process.exit(1); });
-process.on('unhandledRejection', error => { console.error('[hotplug] unhandledRejection:', error); process.exit(1); });
+process.on('uncaughtException', error => console.error('[hotplug] uncaughtException:', error));
+process.on('unhandledRejection', error => console.error('[hotplug] unhandledRejection:', error));
 
 const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'index.html');
 if (!fs.existsSync(dist)) {

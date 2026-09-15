@@ -214,6 +214,7 @@ export class ProviderSessionManager {
       else await page.keyboard.press('Enter');
       const answer = await this.waitForAnswer(page, p.response, before);
       if (!answer) throw new Error(`${p.name} did not return a readable response within 180 seconds.`);
+      if (process.env.HOTPLUG_KEEP_BROWSER !== 'true') await this.dropSession(id);
       return answer;
     };
     const previous = this.queues.get(id) || Promise.resolve();
