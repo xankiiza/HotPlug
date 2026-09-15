@@ -220,16 +220,17 @@ export class ProviderSessionManager {
       await this.dropSession(id);
       await this.killOrphanBrowsers(id);
       return new Promise((resolve, reject) => {
+        const env = {
+          ...process.env,
+          HOTPLUG_DATA_DIR: this.root,
+          HOTPLUG_HEADLESS: 'true',
+          HOTPLUG_CHAT_WORKER: 'false',
+          HOTPLUG_KEEP_BROWSER: 'false',
+        };
+        // Inherited DISPLAY=:99 from start-hotplug breaks headless Chromium on the phone.
+        delete env.DISPLAY;
         const child = spawn(process.execPath, [worker, id, prompt], {
-          env: {
-            ...process.env,
-            HOTPLUG_DATA_DIR: this.root,
-            HOTPLUG_HEADLESS: 'true',
-            HOTPLUG_CHAT_WORKER: 'false',
-            HOTPLUG_KEEP_BROWSER: 'false',
-            // Inherited DISPLAY=:99 from start-hotplug breaks headless Chromium on the phone.
-            DISPLAY: '',
-          },
+          env,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         let out = '', err = '';
