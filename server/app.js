@@ -44,6 +44,13 @@ export function createApp({ sessions = new ProviderSessionManager(), store = new
   });
   const estimateTokens = text => Math.max(1, Math.ceil(String(text).length / 4));
   const buildUsage = (prompt, completion) => { const prompt_tokens = estimateTokens(prompt), completion_tokens = estimateTokens(completion); return { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens }; };
+  const withHeartbeat = async (res, work) => {
+    const timer = setInterval(() => {
+      try { if (!res.writableEnded) res.write(': keepalive\n\n'); } catch { /* ignore */ }
+    }, 15000);
+    try { return await work(); }
+    finally { clearInterval(timer); }
+  };
   const completion = async (req, res, next) => {
     req.setTimeout?.(300000);
     res.setTimeout?.(300000);
@@ -57,16 +64,24 @@ export function createApp({ sessions = new ProviderSessionManager(), store = new
     const replyModel = responseModel(req.body?.model);
     const id = `chatcmpl-${crypto.randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
-    if (req.body.stream === true) {
+    // Always stream when behind Cloudflare public host (or when stream:true) so first bytes beat Error 524.
+    const useStream = req.body.stream === true || Boolean(publicHost);
+    if (useStream) {
       res.status(200); res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no');
       const chunk = (delta, finish_reason = null) => ({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta, finish_reason }] });
       res.write(`data: ${JSON.stringify(chunk({ role: 'assistant' }))}\n\n`);
       if (typeof res.flushHeaders === 'function') res.flushHeaders();
-      const routed = await sessions.sendForModel(prompt, providerId);
-      const usage = buildUsage(prompt, routed.content);
-      res.write(`data: ${JSON.stringify({ ...chunk({ content: routed.content }), system_fingerprint: `hotplug-${routed.provider}`, provider: routed.provider, latencyMs: routed.latencyMs })}\n\n`);
-      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage })}\n\n`);
-      res.end('data: [DONE]\n\n'); return;
+      try {
+        const routed = await withHeartbeat(res, () => sessions.sendForModel(prompt, providerId));
+        const usage = buildUsage(prompt, routed.content);
+        res.write(`data: ${JSON.stringify({ ...chunk({ content: routed.content }), system_fingerprint: `hotplug-${routed.provider}`, provider: routed.provider, latencyMs: routed.latencyMs })}\n\n`);
+        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      } catch (error) {
+        res.write(`data: ${JSON.stringify({ error: { message: error.message, type: 'hotplug_error' } })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      }
+      return;
     }
     const routed = await sessions.sendForModel(prompt, providerId);
     const usage = buildUsage(prompt, routed.content);

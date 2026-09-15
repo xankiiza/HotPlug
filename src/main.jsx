@@ -109,11 +109,67 @@ function Keys({ keys, apiUrl, refresh, setNotice }) {
 }
 
 function Chat({ providers, setNotice }) {
-  const [prompt, setPrompt] = useState(''), [messages, setMessages] = useState([]), [sending, setSending] = useState(false), [model, setModel] = useState('auto');
-  useEffect(() => { if (model !== 'auto' && !providers.some(p => p.id === model)) setModel('auto'); }, [providers, model]);
+  const [prompt, setPrompt] = useState(''), [messages, setMessages] = useState([]), [sending, setSending] = useState(false);
+  const [model, setModel] = useState(() => providers.find(p => p.id === 'gemini')?.id || 'auto');
+  useEffect(() => {
+    if (model !== 'auto' && !providers.some(p => p.id === model)) setModel(providers.find(p => p.id === 'gemini')?.id || 'auto');
+  }, [providers, model]);
   const modelLabel = model === 'auto' ? 'auto (smart route)' : model;
-  const send = async event => { event.preventDefault(); if (!prompt.trim() || !providers.length) return; const text = prompt; setPrompt(''); setMessages(m => [...m, { role: 'user', text, model: modelLabel }]); setSending(true); try { const response = await fetch('/api/admin/test-chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: text }] }) }); const raw = await response.text(); let result; try { result = raw ? JSON.parse(raw) : {}; } catch { throw new Error(response.status === 502 ? 'Gateway offline (502). HotPlug crashed or the tunnel lost connection — wait 30s and retry.' : `Invalid gateway response (${response.status}).`); } if (!response.ok) throw new Error(result.error?.message || `Request failed (${response.status})`); const provider = response.headers.get('x-hotplug-provider') || result.system_fingerprint?.replace('hotplug-', '') || model; setMessages(m => [...m, { role: 'assistant', text: result.choices[0].message.content, provider, model: result.model }]); } catch (error) { setMessages(m => [...m, { role: 'error', text: error.message }]); setNotice(error.message); } finally { setSending(false); } };
-  return <section className="chat-panel"><div className="panel-title"><div><label>LIVE BROWSER TEST</label><h2>Test chat</h2></div><span>{providers.length} profiles · model {modelLabel}</span></div><div className="chat-window">{messages.length === 0 ? <div className="chat-empty"><FiCpu /><strong>{providers.length ? 'Ready for a real test' : 'Sign in to a provider first'}</strong><small>Choose auto for smart routing, or pin a specific signed-in provider.</small></div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'user' ? `You · ${m.model || modelLabel}` : m.role === 'error' ? 'Error' : m.model === 'auto' ? `Auto → ${m.provider}` : m.provider || 'Assistant'}</small><p>{m.text}</p></div>)}</div><form className="chat-form" onSubmit={send}><select value={model} onChange={e => setModel(e.target.value)} disabled={!providers.length || sending} aria-label="Model"><option value="auto">auto — smart route</option>{providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><input value={prompt} onChange={e => setPrompt(e.target.value)} disabled={!providers.length || sending} placeholder={providers.length ? 'Ask a connected AI…' : 'Sign in above first'} /><button className="button" disabled={!providers.length || sending}><FiSend /> {sending ? 'Waiting…' : 'Send'}</button></form></section>;
+  const send = async event => {
+    event.preventDefault();
+    if (!prompt.trim() || !providers.length) return;
+    const text = prompt;
+    setPrompt('');
+    setMessages(m => [...m, { role: 'user', text, model: modelLabel }]);
+    setSending(true);
+    try {
+      const response = await fetch('/api/admin/test-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: text }], stream: true }),
+      });
+      if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
+        const raw = await response.text();
+        let result = {};
+        try { result = raw ? JSON.parse(raw) : {}; } catch { /* ignore */ }
+        throw new Error(result.error?.message || (response.status === 524 || response.status === 502
+          ? `Gateway timeout (${response.status}). Prefer model gemini — browser chat on the phone can take 30–90s.`
+          : `Invalid gateway response (${response.status}).`));
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '', content = '', provider = model, replyModel = model;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+        for (const part of parts) {
+          const line = part.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          let chunk;
+          try { chunk = JSON.parse(data); } catch { continue; }
+          if (chunk.error?.message) throw new Error(chunk.error.message);
+          if (chunk.provider) provider = chunk.provider;
+          if (chunk.model) replyModel = chunk.model;
+          if (chunk.system_fingerprint) provider = chunk.system_fingerprint.replace('hotplug-', '') || provider;
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (delta) content += delta;
+        }
+      }
+      if (!content) throw new Error('No reply from provider. Sign in to Gemini and pin model gemini.');
+      setMessages(m => [...m, { role: 'assistant', text: content, provider, model: replyModel }]);
+    } catch (error) {
+      setMessages(m => [...m, { role: 'error', text: error.message }]);
+      setNotice(error.message);
+    } finally {
+      setSending(false);
+    }
+  };
+  return <section className="chat-panel"><div className="panel-title"><div><label>LIVE BROWSER TEST</label><h2>Test chat</h2></div><span>{providers.length} profiles · model {modelLabel}</span></div><div className="chat-window">{messages.length === 0 ? <div className="chat-empty"><FiCpu /><strong>{providers.length ? 'Ready for a real test' : 'Sign in to a provider first'}</strong><small>Prefer Gemini on the phone. First reply can take up to a minute while Chromium warms up.</small></div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'user' ? `You · ${m.model || modelLabel}` : m.role === 'error' ? 'Error' : m.model === 'auto' ? `Auto → ${m.provider}` : m.provider || 'Assistant'}</small><p>{m.text}</p></div>)}</div><form className="chat-form" onSubmit={send}><select value={model} onChange={e => setModel(e.target.value)} disabled={!providers.length || sending} aria-label="Model"><option value="auto">auto — smart route</option>{providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><input value={prompt} onChange={e => setPrompt(e.target.value)} disabled={!providers.length || sending} placeholder={providers.length ? 'Ask a connected AI…' : 'Sign in above first'} /><button className="button" disabled={!providers.length || sending}><FiSend /> {sending ? 'Waiting…' : 'Send'}</button></form></section>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

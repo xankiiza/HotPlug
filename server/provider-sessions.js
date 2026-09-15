@@ -204,17 +204,18 @@ export class ProviderSessionManager {
       const p = this.definition(id);
       const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
       const page = await this.page(context, p.url);
-      const input = await this.firstVisible(page, p.input, 20000);
+      const input = await this.firstVisible(page, p.input, 12000);
       if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
       const before = await this.responseCount(page, p.response);
       await input.click();
       await input.fill(prompt);
-      const sendButton = await this.firstVisible(page, p.send || [], 5000);
+      const sendButton = await this.firstVisible(page, p.send || [], 3000);
       if (sendButton) await sendButton.click();
       else await page.keyboard.press('Enter');
       const answer = await this.waitForAnswer(page, p.response, before);
-      if (!answer) throw new Error(`${p.name} did not return a readable response within 180 seconds.`);
-      if (process.env.HOTPLUG_KEEP_BROWSER !== 'true') await this.dropSession(id);
+      if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds.`);
+      // Keep Chromium warm by default — cold starts on the phone exceed Cloudflare's 100s timeout.
+      if (process.env.HOTPLUG_DROP_BROWSER === 'true') await this.dropSession(id);
       return answer;
     };
     const previous = this.queues.get(id) || Promise.resolve();
@@ -234,18 +235,19 @@ export class ProviderSessionManager {
   async ranked(prompt) {
     const task = this.taskType(prompt);
     const list = (await this.list()).filter(p => p.connected);
-    const quality = { claude: 95, chatgpt: 93, gemini: 90, deepseek: 86 };
+    // Prefer Gemini on phone — Claude/ChatGPT profiles often exist but hang past Cloudflare's 100s limit.
+    const quality = { gemini: 100, deepseek: 88, chatgpt: 70, claude: 65 };
     const affinity = {
-      coding: { deepseek: 20, claude: 18, chatgpt: 14, gemini: 10 },
-      analysis: { claude: 20, gemini: 17, chatgpt: 15, deepseek: 10 },
-      creative: { claude: 20, chatgpt: 18, gemini: 12, deepseek: 8 },
-      general: { gemini: 18, chatgpt: 16, claude: 15, deepseek: 12 },
+      coding: { deepseek: 22, gemini: 16, claude: 10, chatgpt: 8 },
+      analysis: { gemini: 20, claude: 12, chatgpt: 10, deepseek: 10 },
+      creative: { gemini: 18, chatgpt: 12, claude: 10, deepseek: 8 },
+      general: { gemini: 25, deepseek: 12, chatgpt: 8, claude: 6 },
     };
     return list.map(p => {
       const m = this.metrics.get(p.id) || {};
       const speed = m.averageMs ? Math.max(0, 25 - m.averageMs / 2000) : 12;
-      const reliability = (m.successes || 0) * 2 - (m.failures || 0) * 8;
-      return { ...p, score: quality[p.id] + affinity[task][p.id] + speed + reliability + (p.running ? 3 : 0) };
+      const reliability = (m.successes || 0) * 4 - (m.failures || 0) * 20;
+      return { ...p, score: quality[p.id] + affinity[task][p.id] + speed + reliability + (p.running ? 15 : 0) };
     }).sort((a, b) => b.score - a.score);
   }
 
@@ -264,8 +266,10 @@ export class ProviderSessionManager {
   async sendAuto(prompt) {
     const candidates = await this.ranked(prompt);
     if (!candidates.length) throw new Error('No signed-in provider profiles are available. Sign in to at least one provider in HotPlug Admin.');
+    // Default: one provider only. Failover multiplies cold-start time past Cloudflare 524.
+    const limit = process.env.HOTPLUG_AUTO_FAILOVER === 'true' ? candidates.length : 1;
     const failures = [];
-    for (const provider of candidates) {
+    for (const provider of candidates.slice(0, limit)) {
       const started = Date.now();
       try {
         const content = await this.send(provider.id, prompt);
@@ -279,7 +283,7 @@ export class ProviderSessionManager {
         failures.push(`${provider.name}: ${error.message}`);
       }
     }
-    throw new Error(`All signed-in providers failed. ${failures.join(' | ')}`);
+    throw new Error(`Auto-route failed. ${failures.join(' | ')}. Pin model to gemini in the UI if Gemini is signed in.`);
   }
 
   async context(id, headless, { forLogin = false } = {}) {
@@ -344,7 +348,7 @@ export class ProviderSessionManager {
   }
 
   async waitForAnswer(page, selectors, before) {
-    const end = Date.now() + 180000;
+    const end = Date.now() + 90000;
     let last = '', stable = 0;
     while (Date.now() < end) {
       for (const selector of selectors) {
