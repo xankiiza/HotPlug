@@ -203,9 +203,52 @@ export class ProviderSessionManager {
   }
 
   async send(id, prompt) {
+    // On the phone, Playwright inside the long-lived HotPlug process hangs after the first
+    // failures. A one-shot worker matches the path that successfully returned "pong".
+    if (process.env.HOTPLUG_CHAT_WORKER !== 'false') {
+      return this.sendViaWorker(id, prompt);
+    }
+    return this.sendInProcess(id, prompt);
+  }
+
+  async sendViaWorker(id, prompt) {
+    const { spawn } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const worker = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'chat-worker.mjs');
+    const previous = this.queues.get(id) || Promise.resolve();
+    const run = () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [worker, id, prompt], {
+        env: {
+          ...process.env,
+          HOTPLUG_DATA_DIR: this.root,
+          HOTPLUG_HEADLESS: process.env.HOTPLUG_HEADLESS || 'true',
+          HOTPLUG_CHAT_WORKER: 'false', // prevent recursion inside worker
+          HOTPLUG_KEEP_BROWSER: 'false',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '', err = '';
+      child.stdout.on('data', chunk => { out += chunk; });
+      child.stderr.on('data', chunk => { err += chunk; });
+      child.on('error', reject);
+      child.on('close', code => {
+        try {
+          const parsed = JSON.parse(out.trim() || '{}');
+          if (parsed.ok && parsed.content) return resolve(parsed.content);
+          reject(new Error(parsed.error || err.trim() || `chat-worker exited ${code}`));
+        } catch {
+          reject(new Error(err.trim() || out.trim() || `chat-worker exited ${code}`));
+        }
+      });
+    });
+    const next = previous.catch(() => {}).then(run);
+    this.queues.set(id, next);
+    return next.finally(() => { if (this.queues.get(id) === next) this.queues.delete(id); });
+  }
+
+  async sendInProcess(id, prompt) {
     const run = async () => {
       const p = this.definition(id);
-      // Always start clean — reused contexts on the phone go stale and hang past Cloudflare limits.
       await this.dropSession(id);
       try {
         const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
@@ -227,7 +270,6 @@ export class ProviderSessionManager {
         await this.dropSession(id);
         throw error;
       } finally {
-        // Keep memory low on the phone; cold start ~20–40s is still under Cloudflare with SSE heartbeats.
         if (process.env.HOTPLUG_KEEP_BROWSER !== 'true') await this.dropSession(id);
       }
     };
