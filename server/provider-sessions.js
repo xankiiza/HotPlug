@@ -205,28 +205,49 @@ export class ProviderSessionManager {
   async send(id, prompt) {
     const run = async () => {
       const p = this.definition(id);
+      // Always start clean — reused contexts on the phone go stale and hang past Cloudflare limits.
+      await this.dropSession(id);
       try {
         const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
         const page = await this.page(context, p.url);
+        await this.ensureFreshChat(page, p);
         await this.dismissOverlays(page);
-        const input = await this.firstVisible(page, p.input, 12000);
+        const input = await this.firstVisible(page, p.input, 15000);
         if (!input) throw new Error(`${p.name} session is not signed in or its chat input changed.`);
         const before = await this.responseCount(page, p.response);
+        console.log(`[hotplug] ${id}: typing prompt (${prompt.length} chars), responses before=${before}`);
         await this.focusAndType(page, input, prompt);
         await this.submitPrompt(page, p);
         const answer = await this.waitForAnswer(page, p.response, before);
         if (!answer) throw new Error(`${p.name} did not return a readable response within 90 seconds. Re-verify the session in Admin if Gemini shows a login or consent screen.`);
+        console.log(`[hotplug] ${id}: got reply (${answer.length} chars)`);
         return answer;
       } catch (error) {
-        // Stale Chromium sessions after a failed reply cause endless 90s timeouts — always recycle.
+        console.error(`[hotplug] ${id}: send failed:`, error.message);
         await this.dropSession(id);
         throw error;
+      } finally {
+        // Keep memory low on the phone; cold start ~20–40s is still under Cloudflare with SSE heartbeats.
+        if (process.env.HOTPLUG_KEEP_BROWSER !== 'true') await this.dropSession(id);
       }
     };
     const previous = this.queues.get(id) || Promise.resolve();
     const next = previous.catch(() => {}).then(run);
     this.queues.set(id, next);
     return next.finally(() => { if (this.queues.get(id) === next) this.queues.delete(id); });
+  }
+
+  async ensureFreshChat(page, p) {
+    if (p.url.includes('gemini.google.com')) {
+      const newChat = page.getByRole('button', { name: /new chat/i }).first();
+      if (await newChat.isVisible().catch(() => false)) {
+        await newChat.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(800);
+        return;
+      }
+      // Hard navigate to a clean app root if New chat control is missing.
+      if (!page.url().includes('/app')) await page.goto(p.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    }
   }
 
   async dismissOverlays(page) {
