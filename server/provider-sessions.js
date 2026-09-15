@@ -224,9 +224,11 @@ export class ProviderSessionManager {
           env: {
             ...process.env,
             HOTPLUG_DATA_DIR: this.root,
-            HOTPLUG_HEADLESS: process.env.HOTPLUG_HEADLESS || 'true',
+            HOTPLUG_HEADLESS: 'true',
             HOTPLUG_CHAT_WORKER: 'false',
             HOTPLUG_KEEP_BROWSER: 'false',
+            // Inherited DISPLAY=:99 from start-hotplug breaks headless Chromium on the phone.
+            DISPLAY: '',
           },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
