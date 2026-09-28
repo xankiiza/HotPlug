@@ -6,10 +6,20 @@ import { fileURLToPath } from 'node:url';
 import { ProviderSessionManager } from './provider-sessions.js';
 import { Store } from './store.js';
 import { AuthManager } from './auth.js';
+import { CredentialVault } from './credentials.js';
 import { AUTO_MODEL, listModels, resolveModel, responseModel } from './models.js';
 import { buildPrompt } from './messages.js';
+import { runAgentLoop, runToolProtocolTurn } from './agent/loop.js';
+import { AgentBrowser } from './agent/browser.js';
+import { createToolRegistry } from './agent/tools.js';
 
-export function createApp({ sessions = new ProviderSessionManager(), store = new Store(), auth = new AuthManager() } = {}) {
+export function createApp({
+  sessions = new ProviderSessionManager(),
+  store = new Store(),
+  auth = new AuthManager(),
+  vault = new CredentialVault(),
+  agentBrowser = new AgentBrowser(),
+} = {}) {
   const app = express();
   const publicHost = process.env.HOTPLUG_PUBLIC_HOST || '';
   if (publicHost) app.set('trust proxy', 1);
@@ -23,25 +33,66 @@ export function createApp({ sessions = new ProviderSessionManager(), store = new
   const reqProtocol = req => req.get('x-forwarded-proto') || req.protocol;
   const reqHost = req => req.get('x-forwarded-host') || req.get('host');
   const apiUrlFor = req => publicHost ? `https://${publicHost}/v1` : `${reqProtocol(req)}://${reqHost(req)}/v1`;
-  app.get('/api/health', async (_, res) => res.json({ status: 'ok', browser: sessions.remote ? 'browserless' : 'local', providers: await sessions.list() }));
-  app.get('/api/config', (req, res) => res.json({ apiUrl: apiUrlFor(req), model: AUTO_MODEL, models: listModels().map(m => m.id), publicHost: publicHost || null, browser: sessions.remote ? 'browserless' : 'local' }));
+
+  app.get('/api/health', async (_, res) => res.json({ status: 'ok', browser: sessions.remote ? 'browserless' : 'local', providers: await sessions.list(), agent: true }));
+  app.get('/api/config', (req, res) => res.json({
+    apiUrl: apiUrlFor(req),
+    model: AUTO_MODEL,
+    models: listModels().map(m => m.id),
+    publicHost: publicHost || null,
+    browser: sessions.remote ? 'browserless' : 'local',
+    agent: true,
+    tools: createToolRegistry().list().map(t => t.name),
+  }));
   app.get('/api/auth/status', localAdmin, (req, res) => res.json({ authenticated: auth.authenticated(req), email: auth.authenticated(req) ? 'xankiiza@gmail.com' : null }));
   app.post('/api/auth/login', localAdmin, (req, res) => { if (!auth.validCredentials(req.body?.email, req.body?.password)) return res.status(401).json({ error: { message: 'Incorrect email or password.', type: 'authentication_error' } }); const token = auth.createSession(); res.setHeader('Set-Cookie', auth.cookie(token)); res.json({ authenticated: true, email: 'xankiiza@gmail.com' }); });
   app.post('/api/auth/logout', localAdmin, signedIn, (req, res) => { auth.revoke(req); res.setHeader('Set-Cookie', auth.clearCookie()); res.json({ authenticated: false }); });
+
   app.get('/api/admin/providers', localAdmin, signedIn, async (_, res) => res.json({ providers: await sessions.list() }));
   app.post('/api/admin/providers/:id/login', localAdmin, signedIn, async (req, res, next) => { try { res.json(await sessions.openLogin(req.params.id)); } catch (e) { next(e); } });
   app.post('/api/admin/providers/:id/verify', localAdmin, signedIn, async (req, res, next) => { try { res.json(await sessions.verify(req.params.id)); } catch (e) { next(e); } });
   app.get('/api/admin/providers/:id/diagnose', localAdmin, signedIn, async (req, res, next) => { try { res.json(await sessions.diagnose(req.params.id, String(req.query.draft || '').slice(0, 100))); } catch (e) { next(e); } });
+  app.post('/api/admin/providers/:id/auto-login', localAdmin, signedIn, async (req, res, next) => {
+    try {
+      let email = req.body?.email;
+      let password = req.body?.password;
+      if (!password) {
+        const saved = await vault.get(req.params.id);
+        if (!saved) return res.status(400).json({ error: { message: 'No credentials saved. Provide email/password or save them first.' } });
+        email = email || saved.email;
+        password = saved.password;
+      } else if (req.body?.save !== false) {
+        await vault.set(req.params.id, { email, password });
+      }
+      res.json(await sessions.autoLogin(req.params.id, { email, password }));
+    } catch (e) { next(e); }
+  });
+
+  app.get('/api/admin/credentials', localAdmin, signedIn, async (_, res) => res.json({ credentials: await vault.list() }));
+  app.put('/api/admin/credentials/:id', localAdmin, signedIn, async (req, res, next) => {
+    try {
+      if (!req.body?.password) return res.status(400).json({ error: { message: 'password is required' } });
+      res.json(await vault.set(req.params.id, { email: req.body.email, password: req.body.password }));
+    } catch (e) { next(e); }
+  });
+  app.delete('/api/admin/credentials/:id', localAdmin, signedIn, async (req, res, next) => {
+    try { res.json({ deleted: await vault.remove(req.params.id) }); } catch (e) { next(e); }
+  });
+
   app.get('/api/admin/keys', localAdmin, signedIn, async (_, res) => res.json({ keys: await store.listKeys() }));
   app.post('/api/admin/keys', localAdmin, signedIn, async (req, res, next) => { try { res.status(201).json(await store.createKey(req.body?.name)); } catch (e) { next(e); } });
   app.delete('/api/admin/keys/:id', localAdmin, signedIn, async (req, res, next) => { try { res.json({ deleted: await store.deleteKey(req.params.id) }); } catch (e) { next(e); } });
+  app.get('/api/admin/tools', localAdmin, signedIn, (_, res) => res.json({ tools: createToolRegistry().list() }));
+
   const models = listModels();
   app.get('/v1/models', apiKey, (_, res) => res.json({ object: 'list', data: models }));
   app.get('/v1/models/:id', apiKey, (req, res) => {
-    const model = models.find(m => m.id === req.params.id || m.root === req.params.id);
+    const id = decodeURIComponent(req.params.id);
+    const model = models.find(m => m.id === id || m.root === id || m.root === `hotplug/${id}`);
     if (!model) return res.status(404).json({ error: { message: `Model ${req.params.id} not found`, type: 'invalid_request_error' } });
     res.json(model);
   });
+
   const estimateTokens = text => Math.max(1, Math.ceil(String(text).length / 4));
   const buildUsage = (prompt, completion) => { const prompt_tokens = estimateTokens(prompt), completion_tokens = estimateTokens(completion); return { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens }; };
   const withHeartbeat = async (res, work) => {
@@ -51,50 +102,150 @@ export function createApp({ sessions = new ProviderSessionManager(), store = new
     try { return await work(); }
     finally { clearInterval(timer); }
   };
+
+  const wantExecute = (req, resolved) => resolved.mode === 'agent' || req.body?.agent === true;
+  const wantProtocol = (req, resolved) => !wantExecute(req, resolved) && Array.isArray(req.body?.tools) && req.body.tools.length > 0;
+
   const completion = async (req, res, next) => {
-    req.setTimeout?.(300000);
-    res.setTimeout?.(300000);
+    req.setTimeout?.(600000);
+    res.setTimeout?.(600000);
     try {
-    const messages = req.body?.messages;
-    if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: { message: 'messages must be a non-empty array', type: 'invalid_request_error', param: 'messages', code: null } });
-    let providerId;
-    try { providerId = resolveModel(req.body?.model); }
-    catch (e) { return res.status(400).json({ error: { message: e.message, type: 'invalid_request_error', param: 'model', code: 'model_not_found' } }); }
-    const prompt = buildPrompt(messages);
-    const replyModel = responseModel(req.body?.model);
-    const id = `chatcmpl-${crypto.randomUUID()}`;
-    const created = Math.floor(Date.now() / 1000);
-    // Always stream when behind Cloudflare public host (or when stream:true) so first bytes beat Error 524.
-    const useStream = req.body.stream === true || Boolean(publicHost);
-    if (useStream) {
-      res.status(200); res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no');
-      const chunk = (delta, finish_reason = null) => ({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta, finish_reason }] });
-      res.write(`data: ${JSON.stringify(chunk({ role: 'assistant' }))}\n\n`);
-      if (typeof res.flushHeaders === 'function') res.flushHeaders();
-      try {
-        const routed = await withHeartbeat(res, () => sessions.sendForModel(prompt, providerId));
-        const usage = buildUsage(prompt, routed.content);
-        res.write(`data: ${JSON.stringify({ ...chunk({ content: routed.content }), system_fingerprint: `hotplug-${routed.provider}`, provider: routed.provider, latencyMs: routed.latencyMs })}\n\n`);
-        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage })}\n\n`);
-        res.end('data: [DONE]\n\n');
-      } catch (error) {
-        res.write(`data: ${JSON.stringify({ error: { message: error.message, type: 'hotplug_error' } })}\n\n`);
-        res.end('data: [DONE]\n\n');
+      const messages = req.body?.messages;
+      if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: { message: 'messages must be a non-empty array', type: 'invalid_request_error', param: 'messages', code: null } });
+      let resolved;
+      try { resolved = resolveModel(req.body?.model); }
+      catch (e) { return res.status(400).json({ error: { message: e.message, type: 'invalid_request_error', param: 'model', code: 'model_not_found' } }); }
+
+      const replyModel = responseModel(req.body?.model);
+      const id = `chatcmpl-${crypto.randomUUID()}`;
+      const created = Math.floor(Date.now() / 1000);
+      const useStream = req.body.stream === true || Boolean(publicHost);
+      const executeMode = wantExecute(req, resolved);
+      const protocolMode = wantProtocol(req, resolved);
+
+      // --- OpenAI-compatible tool protocol (OpenClaw etc.): return tool_calls, client executes ---
+      if (protocolMode) {
+        const run = () => runToolProtocolTurn({
+          sessions,
+          model: resolved.brain,
+          messages,
+          tools: req.body.tools,
+        });
+        if (useStream) {
+          res.status(200); res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no');
+          res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] })}\n\n`);
+          if (typeof res.flushHeaders === 'function') res.flushHeaders();
+          try {
+            const result = await withHeartbeat(res, run);
+            const usage = buildUsage(buildPrompt(messages), result.message.content || JSON.stringify(result.message.tool_calls || []));
+            if (result.finish_reason === 'tool_calls') {
+              res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, system_fingerprint: `hotplug-${result.provider}`, choices: [{ index: 0, delta: { tool_calls: result.message.tool_calls.map((c, i) => ({ index: i, id: c.id, type: 'function', function: { name: c.function.name, arguments: c.function.arguments } })) }, finish_reason: null }] })}\n\n`);
+              res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage })}\n\n`);
+            } else {
+              res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, system_fingerprint: `hotplug-${result.provider}`, choices: [{ index: 0, delta: { content: result.message.content || '' }, finish_reason: null }] })}\n\n`);
+              res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage })}\n\n`);
+            }
+            res.end('data: [DONE]\n\n');
+          } catch (error) {
+            res.write(`data: ${JSON.stringify({ error: { message: error.message, type: 'hotplug_error' } })}\n\n`);
+            res.end('data: [DONE]\n\n');
+          }
+          return;
+        }
+        const result = await run();
+        const usage = buildUsage(buildPrompt(messages), result.message.content || JSON.stringify(result.message.tool_calls || []));
+        res.setHeader('x-hotplug-provider', result.provider);
+        res.setHeader('x-hotplug-latency-ms', String(result.latencyMs));
+        res.setHeader('x-hotplug-tool-protocol', '1');
+        return res.json({
+          id, object: 'chat.completion', created, model: replyModel,
+          system_fingerprint: `hotplug-${result.provider}`,
+          choices: [{ index: 0, message: result.message, finish_reason: result.finish_reason }],
+          usage,
+        });
       }
-      return;
-    }
-    const routed = await sessions.sendForModel(prompt, providerId);
-    const usage = buildUsage(prompt, routed.content);
-    res.setHeader('x-hotplug-provider', routed.provider);
-    res.setHeader('x-hotplug-latency-ms', String(routed.latencyMs));
-    res.json({ id, object: 'chat.completion', created, model: replyModel, system_fingerprint: `hotplug-${routed.provider}`, choices: [{ index: 0, message: { role: 'assistant', content: routed.content }, finish_reason: 'stop' }], usage });
-  } catch (e) { next(e); } };
+
+      // --- HotPlug executes its own tools (agent / agent/gemini) ---
+      if (executeMode) {
+        const run = () => runAgentLoop({
+          sessions,
+          model: resolved.brain,
+          messages,
+          tools: req.body?.tools,
+          browserTool: agentBrowser,
+          onEvent: useStream ? (evt => {
+            try {
+              if (evt.type === 'tool_start' || evt.type === 'tool_end') {
+                res.write(`data: ${JSON.stringify({ id, object: 'hotplug.agent.event', created, model: replyModel, event: evt })}\n\n`);
+              }
+            } catch { /* ignore */ }
+          }) : null,
+        });
+
+        if (useStream) {
+          res.status(200); res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no');
+          const chunk = (delta, finish_reason = null) => ({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta, finish_reason }] });
+          res.write(`data: ${JSON.stringify(chunk({ role: 'assistant' }))}\n\n`);
+          if (typeof res.flushHeaders === 'function') res.flushHeaders();
+          try {
+            const result = await withHeartbeat(res, run);
+            const usage = buildUsage(buildPrompt(messages), result.content);
+            res.write(`data: ${JSON.stringify({ ...chunk({ content: result.content }), system_fingerprint: `hotplug-${result.provider}`, provider: result.provider, latencyMs: result.latencyMs, agent: { steps: result.steps, trace: result.trace } })}\n\n`);
+            res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: result.finish_reason || 'stop' }], usage })}\n\n`);
+            res.end('data: [DONE]\n\n');
+          } catch (error) {
+            res.write(`data: ${JSON.stringify({ error: { message: error.message, type: 'hotplug_error' } })}\n\n`);
+            res.end('data: [DONE]\n\n');
+          }
+          return;
+        }
+
+        const result = await run();
+        const usage = buildUsage(buildPrompt(messages), result.content);
+        res.setHeader('x-hotplug-provider', result.provider);
+        res.setHeader('x-hotplug-latency-ms', String(result.latencyMs));
+        res.setHeader('x-hotplug-agent-steps', String(result.steps));
+        return res.json({
+          id, object: 'chat.completion', created, model: replyModel,
+          system_fingerprint: `hotplug-${result.provider}`,
+          choices: [{ index: 0, message: { role: 'assistant', content: result.content }, finish_reason: result.finish_reason || 'stop' }],
+          usage,
+          hotplug_agent: { steps: result.steps, trace: result.trace },
+        });
+      }
+
+      const prompt = buildPrompt(messages);
+      if (useStream) {
+        res.status(200); res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no');
+        const chunk = (delta, finish_reason = null) => ({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta, finish_reason }] });
+        res.write(`data: ${JSON.stringify(chunk({ role: 'assistant' }))}\n\n`);
+        if (typeof res.flushHeaders === 'function') res.flushHeaders();
+        try {
+          const routed = await withHeartbeat(res, () => sessions.sendForModel(prompt, resolved.brain));
+          const usage = buildUsage(prompt, routed.content);
+          res.write(`data: ${JSON.stringify({ ...chunk({ content: routed.content }), system_fingerprint: `hotplug-${routed.provider}`, provider: routed.provider, latencyMs: routed.latencyMs })}\n\n`);
+          res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: replyModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage })}\n\n`);
+          res.end('data: [DONE]\n\n');
+        } catch (error) {
+          res.write(`data: ${JSON.stringify({ error: { message: error.message, type: 'hotplug_error' } })}\n\n`);
+          res.end('data: [DONE]\n\n');
+        }
+        return;
+      }
+      const routed = await sessions.sendForModel(prompt, resolved.brain);
+      const usage = buildUsage(prompt, routed.content);
+      res.setHeader('x-hotplug-provider', routed.provider);
+      res.setHeader('x-hotplug-latency-ms', String(routed.latencyMs));
+      res.json({ id, object: 'chat.completion', created, model: replyModel, system_fingerprint: `hotplug-${routed.provider}`, choices: [{ index: 0, message: { role: 'assistant', content: routed.content }, finish_reason: 'stop' }], usage });
+    } catch (e) { next(e); }
+  };
+
   app.post('/api/admin/test-chat', localAdmin, signedIn, completion);
   app.post('/v1/chat/completions', apiKey, completion);
   const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
   app.use(express.static(dist)); app.use((req, res, next) => req.method === 'GET' && !req.path.startsWith('/api/') && !req.path.startsWith('/v1/') ? res.sendFile(path.join(dist, 'index.html')) : next());
   app.use((error, _req, res, _next) => {
-    const status = /not signed in|Unknown model|Unsupported provider/.test(error.message) ? 400 : 502;
+    const status = /not signed in|Unknown model|Unsupported provider|password is required|No credentials|Path escapes|Unknown tool/.test(error.message) ? 400 : 502;
     res.status(status).json({ error: { message: error.message, type: status === 400 ? 'invalid_request_error' : 'hotplug_error' } });
   });
   return app;

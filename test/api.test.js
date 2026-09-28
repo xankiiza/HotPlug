@@ -131,3 +131,43 @@ test('POST /v1/chat/completions streams OpenAI-compatible SSE chunks', async () 
     assert.equal(typeof finish.usage.total_tokens, 'number');
   });
 });
+
+test('POST /v1/chat/completions with tools returns OpenAI tool_calls (protocol mode)', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'hotplug-api-tools-'));
+  const store = new Store(root);
+  const key = await store.createKey('test');
+  const sessions = {
+    list: mockSessions.list,
+    sendAuto: mockSessions.sendAuto,
+    sendForModel: async () => ({
+      content: 'TOOL_CALL\n{"name":"exec","arguments":{"cmd":"ls"}}\nEND_TOOL_CALL',
+      provider: 'gemini',
+      latencyMs: 50,
+    }),
+  };
+  const app = createApp({ sessions, store });
+  const server = app.listen(0);
+  await new Promise(resolve => server.once('listening', resolve));
+  const { port } = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gemini',
+        stream: false,
+        messages: [{ role: 'user', content: 'list files' }],
+        tools: [{ type: 'function', function: { name: 'exec', description: 'run shell', parameters: { type: 'object', properties: { cmd: { type: 'string' } } } } }],
+      }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.choices[0].finish_reason, 'tool_calls');
+    assert.equal(body.choices[0].message.content, null);
+    assert.equal(body.choices[0].message.tool_calls[0].function.name, 'exec');
+    assert.match(body.choices[0].message.tool_calls[0].function.arguments, /ls/);
+    assert.equal(res.headers.get('x-hotplug-tool-protocol'), '1');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});

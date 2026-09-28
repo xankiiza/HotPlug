@@ -18,14 +18,37 @@ Open the Vite URL, choose **Get Started**, and click **Sign In** beside a provid
 - API key: the `hp_...` value shown once when a key is created in the dashboard
 - Model: `auto` (smart routing) or a specific provider: `gemini`, `deepseek`, `claude`, `chatgpt`
 - OpenClaw-style ids also work: `hotplug/auto`, `hotplug/gemini`, etc.
+- **Agent mode:** `agent` or `agent/gemini` — free browser AI as the brain + HotPlug tools (terminal, files, web search, browser)
 
 ```javascript
 baseURL: "https://hotplug.xankiiza.com/v1"
 apiKey: "hp_..."
-model: "auto"          // or "gemini", "hotplug/gemini", ...
+model: "agent/gemini"  // or "auto" for plain chat
 ```
 
 List models: `GET /v1/models`. Pin a provider when auto-routing picks the wrong session or when debugging OpenClaw failures.
+
+### Agent tools
+
+HotPlug fills the **function-calling gap** in code so free browser chats behave like keyed API models:
+
+1. **Protocol mode (OpenClaw / any client)** — send a normal model (`gemini`, `auto`) plus OpenAI `tools`. HotPlug returns real `tool_calls` + `finish_reason: "tool_calls"`. The client runs the tools and continues the conversation (same as OpenAI).
+2. **Execute mode** — use `agent` / `agent/gemini` (or `agent: true`). HotPlug runs its own tools in a loop (terminal, files, search, browser).
+
+Reliability layers (code, not hope):
+- Strict `TOOL_CALL` prompting
+- Auto-repair if the brain replies in free text
+- Schema validation of tool names/arguments
+- Intent fallback for HotPlug-owned tools when format is still wrong
+
+| Tool (execute mode) | Purpose |
+|------|---------|
+| `run_terminal` | Shell in `data/workspace` |
+| `read_file` / `write_file` / `list_dir` | Workspace files |
+| `web_search` | DuckDuckGo HTML search |
+| `browser_navigate` | Open URL and extract text |
+
+Set `HOTPLUG_SECRET` to encrypt saved provider passwords. Use **Credentials** in Admin to auto-fill DeepSeek/Claude/ChatGPT login forms (CAPTCHA/2FA may still need Verify).
 
 The API returns standard OpenAI chat completion shapes (`chat.completion`, SSE `chat.completion.chunk`, and `usage` token counts) so OpenClaw and other OpenAI-compatible clients can plug in directly.
 

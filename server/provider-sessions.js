@@ -105,6 +105,52 @@ export class ProviderSessionManager {
     };
   }
 
+  /** Fill saved email/password into the provider login form (best-effort; 2FA still needs manual step). */
+  async autoLogin(id, { email, password }) {
+    const p = this.definition(id);
+    if (!email || !password) throw new Error('Email and password are required for auto-login.');
+    if (id === 'gemini') {
+      throw new Error('Google/Gemini usually requires interactive login or an existing browser profile. Use Sign In + Verify, or save a profile after manual login.');
+    }
+    await this.dropSession(id);
+    const context = await this.context(id, process.env.HOTPLUG_HEADLESS !== 'false');
+    const startUrl = p.loginUrl || p.url;
+    const page = await this.page(context, startUrl);
+    if (!page.url().startsWith(new URL(startUrl).origin)) {
+      await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    }
+    const emailField = await this.firstVisible(page, p.email || ['input[type="email"]', 'input'], 20000);
+    if (!emailField) throw new Error(`Could not find ${p.name} email/username field. Use manual Sign In.`);
+    await emailField.click({ force: true }).catch(() => {});
+    await emailField.fill(email).catch(async () => { await page.keyboard.type(email, { delay: 15 }); });
+    const continueBtn = await this.firstVisible(page, p.loginSubmit || ['button[type="submit"]'], 4000);
+    if (continueBtn) await continueBtn.click({ force: true }).catch(() => {});
+    const passwordField = await this.firstVisible(page, p.password || ['input[type="password"]'], 20000);
+    if (!passwordField) {
+      return {
+        id,
+        partial: true,
+        message: `Email entered for ${p.name}. Password field not shown yet (CAPTCHA/2FA/SSO). Finish in the browser, then click Verify.`,
+      };
+    }
+    await passwordField.click({ force: true }).catch(() => {});
+    await passwordField.fill(password).catch(async () => { await page.keyboard.type(password, { delay: 15 }); });
+    const submit = await this.firstVisible(page, p.loginSubmit || ['button[type="submit"]'], 5000);
+    if (submit) await submit.click({ force: true }).catch(() => page.keyboard.press('Enter'));
+    else await page.keyboard.press('Enter');
+    await page.waitForTimeout(3500);
+    try {
+      await this.verify(id);
+      return { id, connected: true, message: `${p.name} auto-login succeeded and session verified.` };
+    } catch (error) {
+      return {
+        id,
+        partial: true,
+        message: `Credentials submitted for ${p.name}, but chat input not ready yet (${error.message}). Complete any CAPTCHA/2FA, then click Verify.`,
+      };
+    }
+  }
+
   async dropSession(id) {
     const context = this.contexts.get(id);
     const browser = this.browsers.get(id);

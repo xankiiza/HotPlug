@@ -31,7 +31,7 @@ function useCopyState() {
 }
 
 function OpenClawConfig({ apiUrl, apiKey, model = 'auto' }) {
-  return <pre><span>// OpenClaw configuration</span>{'\n'}baseURL: <i>"{apiUrl}"</i>{'\n'}apiKey: <i>"{apiKey || 'hp_...'}"</i>{'\n'}model: <i>"{model}"</i> <span>// auto, gemini, deepseek, claude, chatgpt, or hotplug/&lt;id&gt;</span></pre>;
+  return <pre><span>// OpenClaw / client configuration</span>{'\n'}baseURL: <i>"{apiUrl}"</i>{'\n'}apiKey: <i>"{apiKey || 'hp_...'}"</i>{'\n'}model: <i>"{model}"</i> <span>// auto | gemini | agent | agent/gemini</span></pre>;
 }
 
 function KeyRevealModal({ keyRecord, apiUrl, onClose, setNotice }) {
@@ -92,13 +92,31 @@ function Home({ onStart }) {
 function Admin() {
   const apiUrl = useApiUrl();
   const [providers, setProviders] = useState([]), [keys, setKeys] = useState([]), [notice, setNotice] = useState(''), [busy, setBusy] = useState(''), [loading, setLoading] = useState(true);
+  const [credFor, setCredFor] = useState(null);
   const refresh = async () => { setLoading(true); const [providerResult, keyResult] = await Promise.allSettled([api('/api/admin/providers'), api('/api/admin/keys')]); if (providerResult.status === 'fulfilled') setProviders(providerResult.value.providers); else setNotice(providerResult.reason.message); if (keyResult.status === 'fulfilled') setKeys(keyResult.value.keys); else setNotice(keyResult.reason.message); setLoading(false); };
   useEffect(() => { refresh(); }, []);
   useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(''), 2800); return () => window.clearTimeout(timer); }, [notice]);
   const login = async id => { setBusy(id); try { const result = await api(`/api/admin/providers/${id}/login`, { method: 'POST' }); if (result.liveURL) window.open(result.liveURL, '_blank', 'noopener,noreferrer'); setNotice(result.liveURL ? `${result.message} Link opened in a new tab.` : result.message); await refresh(); } catch (error) { setNotice(error.message); } finally { setBusy(''); } };
   const verify = async id => { setBusy(id); try { await api(`/api/admin/providers/${id}/verify`, { method: 'POST' }); setNotice('Session verified. This provider is ready.'); await refresh(); } catch (error) { setNotice(error.message); } finally { setBusy(''); } };
   const isProduction = window.location.hostname === 'hotplug.xankiiza.com';
-  return <main className="admin-page">{notice && <div className="notice" onClick={() => setNotice('')}>{notice}</div>}<div className="admin-heading"><div><label>CONTROL CENTER</label><h1>HotPlug <i>gateway.</i></h1><p>Connect providers, create API keys, and copy the OpenClaw endpoint below.</p></div><span className="local-badge"><b /> {isProduction ? 'hotplug.xankiiza.com' : 'LOCAL'}</span></div><div className="admin-grid"><section className="panel"><div className="panel-title"><div><label>PROVIDER SESSIONS</label><h2>Browser profiles</h2></div><button className="icon-button" onClick={refresh}><FiRefreshCw /></button></div>{loading && providers.length === 0 ? <div className="provider-loading">Loading providers…</div> : providers.length === 0 ? <div className="provider-loading error">Providers could not be loaded. <button onClick={refresh}>Retry</button></div> : providers.map(p => <div className="provider-row" key={p.id}><span className={'picon ' + p.id}>{p.name[0]}</span><div className="provider-info"><strong>{p.name}</strong><small>{p.model} · {p.connected ? 'Local profile found' : 'Not signed in'}</small></div><span className={'session-status ' + (p.connected ? 'ready' : 'off')}><b /> {p.running ? 'Browser open' : p.connected ? 'Profile saved' : 'Disconnected'}</span><button className="connect-button" disabled={busy === p.id} onClick={() => p.connected ? verify(p.id) : login(p.id)}>{busy === p.id ? 'Opening…' : p.connected ? 'Verify' : 'Sign In'} <FiArrowUpRight /></button></div>)}</section><Keys keys={keys} apiUrl={apiUrl} refresh={refresh} setNotice={setNotice} /></div><Chat providers={providers.filter(p => p.connected)} setNotice={setNotice} /><section className="endpoint-panel"><div><label>OPENCLAW ENDPOINT</label><CopyEndpoint url={apiUrl} onCopy={setNotice} /><p>Use a generated <code>hp_...</code> key as the Bearer token. Set model to <code>auto</code> or a provider id (<code>gemini</code>, <code>hotplug/gemini</code>, etc.).</p></div><OpenClawConfig apiUrl={apiUrl} /></section></main>;
+  return <main className="admin-page">{notice && <div className="notice" onClick={() => setNotice('')}>{notice}</div>}{credFor && <CredentialsModal provider={credFor} onClose={() => setCredFor(null)} setNotice={setNotice} onDone={refresh} />}<div className="admin-heading"><div><label>CONTROL CENTER</label><h1>HotPlug <i>gateway.</i></h1><p>Connect providers, create API keys, and run agentic chats with tools.</p></div><span className="local-badge"><b /> {isProduction ? 'hotplug.xankiiza.com' : 'LOCAL'}</span></div><div className="admin-grid"><section className="panel"><div className="panel-title"><div><label>PROVIDER SESSIONS</label><h2>Browser profiles</h2></div><button className="icon-button" onClick={refresh}><FiRefreshCw /></button></div>{loading && providers.length === 0 ? <div className="provider-loading">Loading providers…</div> : providers.length === 0 ? <div className="provider-loading error">Providers could not be loaded. <button onClick={refresh}>Retry</button></div> : providers.map(p => <div className="provider-row" key={p.id}><span className={'picon ' + p.id}>{p.name[0]}</span><div className="provider-info"><strong>{p.name}</strong><small>{p.model} · {p.connected ? 'Local profile found' : 'Not signed in'}</small></div><span className={'session-status ' + (p.connected ? 'ready' : 'off')}><b /> {p.running ? 'Browser open' : p.connected ? 'Profile saved' : 'Disconnected'}</span><div className="provider-actions"><button type="button" className="connect-button outline" disabled={busy === p.id} onClick={() => setCredFor(p)}>Credentials</button><button className="connect-button" disabled={busy === p.id} onClick={() => p.connected ? verify(p.id) : login(p.id)}>{busy === p.id ? 'Opening…' : p.connected ? 'Verify' : 'Sign In'} <FiArrowUpRight /></button></div></div>)}</section><Keys keys={keys} apiUrl={apiUrl} refresh={refresh} setNotice={setNotice} /></div><Chat providers={providers.filter(p => p.connected)} setNotice={setNotice} /><section className="endpoint-panel"><div><label>OPENCLAW / AGENT ENDPOINT</label><CopyEndpoint url={apiUrl} onCopy={setNotice} /><p>Chat models: <code>auto</code>, <code>gemini</code>, … · Agent models: <code>agent</code>, <code>agent/gemini</code> (tools: terminal, files, search, browser).</p></div><OpenClawConfig apiUrl={apiUrl} model="agent/gemini" /></section></main>;
+}
+
+function CredentialsModal({ provider, onClose, setNotice, onDone }) {
+  const [email, setEmail] = useState(''), [password, setPassword] = useState(''), [busy, setBusy] = useState(false);
+  const save = async event => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/api/admin/credentials/${provider.id}`, { method: 'PUT', body: JSON.stringify({ email, password }) });
+      const result = await api(`/api/admin/providers/${provider.id}/auto-login`, { method: 'POST', body: JSON.stringify({ email, password, save: true }) });
+      setNotice(result.message || 'Credentials saved');
+      onDone?.();
+      onClose();
+    } catch (error) { setNotice(error.message); }
+    finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={e => e.stopPropagation()}><button type="button" className="modal-close" onClick={onClose}>×</button><label>PROVIDER CREDENTIALS</label><h2>{provider.name}</h2><p>Stored encrypted on this server. Auto-login fills the web form; CAPTCHA/2FA may still need a manual step, then click Verify.</p><form onSubmit={save}><label htmlFor="cred-email">Email / username</label><input id="cred-email" type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="username" /><label htmlFor="cred-pass">Password</label><input id="cred-pass" type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" /><div className="modal-actions"><button type="submit" className="button" disabled={busy}>{busy ? 'Signing in…' : 'Save & auto-login'}</button></div></form><small><FiShield /> Set HOTPLUG_SECRET in production. Never commit credentials.</small></div></div>;
 }
 
 function Keys({ keys, apiUrl, refresh, setNotice }) {
@@ -109,12 +127,15 @@ function Keys({ keys, apiUrl, refresh, setNotice }) {
 }
 
 function Chat({ providers, setNotice }) {
+  const defaultBrain = () => providers.find(p => p.id === 'gemini')?.id || 'auto';
   const [prompt, setPrompt] = useState(''), [messages, setMessages] = useState([]), [sending, setSending] = useState(false);
-  const [model, setModel] = useState(() => providers.find(p => p.id === 'gemini')?.id || 'auto');
+  const [brain, setBrain] = useState(defaultBrain);
+  const [agentMode, setAgentMode] = useState(false);
   useEffect(() => {
-    if (model !== 'auto' && !providers.some(p => p.id === model)) setModel(providers.find(p => p.id === 'gemini')?.id || 'auto');
-  }, [providers, model]);
-  const modelLabel = model === 'auto' ? 'auto (smart route)' : model;
+    if (brain !== 'auto' && !providers.some(p => p.id === brain)) setBrain(defaultBrain());
+  }, [providers, brain]);
+  const requestModel = agentMode ? (brain === 'auto' ? 'agent' : `agent/${brain}`) : brain;
+  const modelLabel = agentMode ? `agent/${brain}` : (brain === 'auto' ? 'auto (smart route)' : brain);
   const send = async event => {
     event.preventDefault();
     if (!prompt.trim() || !providers.length) return;
@@ -126,7 +147,7 @@ function Chat({ providers, setNotice }) {
       const response = await fetch('/api/admin/test-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: text }], stream: true }),
+        body: JSON.stringify({ model: requestModel, messages: [{ role: 'user', content: text }], stream: true, agent: agentMode }),
       });
       if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
         const raw = await response.text();
@@ -138,7 +159,8 @@ function Chat({ providers, setNotice }) {
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = '', content = '', provider = model, replyModel = model;
+      let buffer = '', content = '', provider = brain, replyModel = requestModel;
+      const toolNotes = [];
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -153,6 +175,10 @@ function Chat({ providers, setNotice }) {
           let chunk;
           try { chunk = JSON.parse(data); } catch { continue; }
           if (chunk.error?.message) throw new Error(chunk.error.message);
+          if (chunk.object === 'hotplug.agent.event' && chunk.event?.type === 'tool_start') {
+            toolNotes.push(`⚙ ${chunk.event.name}`);
+            continue;
+          }
           if (chunk.provider) provider = chunk.provider;
           if (chunk.model) replyModel = chunk.model;
           if (chunk.system_fingerprint) provider = chunk.system_fingerprint.replace('hotplug-', '') || provider;
@@ -161,7 +187,8 @@ function Chat({ providers, setNotice }) {
         }
       }
       if (!content) throw new Error('No reply from provider. Sign in to Gemini and pin model gemini.');
-      setMessages(m => [...m, { role: 'assistant', text: content, provider, model: replyModel }]);
+      const prefix = toolNotes.length ? `${toolNotes.join(' → ')}\n\n` : '';
+      setMessages(m => [...m, { role: 'assistant', text: prefix + content, provider, model: replyModel }]);
     } catch (error) {
       setMessages(m => [...m, { role: 'error', text: error.message }]);
       setNotice(error.message);
@@ -169,7 +196,7 @@ function Chat({ providers, setNotice }) {
       setSending(false);
     }
   };
-  return <section className="chat-panel"><div className="panel-title"><div><label>LIVE BROWSER TEST</label><h2>Test chat</h2></div><span>{providers.length} profiles · model {modelLabel}</span></div><div className="chat-window">{messages.length === 0 ? <div className="chat-empty"><FiCpu /><strong>{providers.length ? 'Ready for a real test' : 'Sign in to a provider first'}</strong><small>Prefer Gemini on the phone. First reply can take up to a minute while Chromium warms up.</small></div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'user' ? `You · ${m.model || modelLabel}` : m.role === 'error' ? 'Error' : m.model === 'auto' ? `Auto → ${m.provider}` : m.provider || 'Assistant'}</small><p>{m.text}</p></div>)}</div><form className="chat-form" onSubmit={send}><select value={model} onChange={e => setModel(e.target.value)} disabled={!providers.length || sending} aria-label="Model"><option value="auto">auto — smart route</option>{providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><input value={prompt} onChange={e => setPrompt(e.target.value)} disabled={!providers.length || sending} placeholder={providers.length ? 'Ask a connected AI…' : 'Sign in above first'} /><button className="button" disabled={!providers.length || sending}><FiSend /> {sending ? 'Waiting…' : 'Send'}</button></form></section>;
+  return <section className="chat-panel"><div className="panel-title"><div><label>LIVE BROWSER TEST</label><h2>Test chat</h2></div><span>{providers.length} profiles · {modelLabel}</span></div><div className="chat-window">{messages.length === 0 ? <div className="chat-empty"><FiCpu /><strong>{providers.length ? 'Ready for a real test' : 'Sign in to a provider first'}</strong><small>Enable Agent for tool use (terminal, files, search, browser). First reply can take up to a minute.</small></div> : messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'user' ? `You · ${m.model || modelLabel}` : m.role === 'error' ? 'Error' : m.model?.startsWith('agent') ? `Agent → ${m.provider}` : m.model === 'auto' ? `Auto → ${m.provider}` : m.provider || 'Assistant'}</small><p>{m.text}</p></div>)}</div><form className="chat-form" onSubmit={send}><label className="agent-toggle"><input type="checkbox" checked={agentMode} onChange={e => setAgentMode(e.target.checked)} disabled={!providers.length || sending} /> Agent</label><select value={brain} onChange={e => setBrain(e.target.value)} disabled={!providers.length || sending} aria-label="Brain model"><option value="auto">auto — smart route</option>{providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><input value={prompt} onChange={e => setPrompt(e.target.value)} disabled={!providers.length || sending} placeholder={providers.length ? (agentMode ? 'Ask the agent to search, code, or run a command…' : 'Ask a connected AI…') : 'Sign in above first'} /><button className="button" disabled={!providers.length || sending}><FiSend /> {sending ? 'Waiting…' : 'Send'}</button></form></section>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
